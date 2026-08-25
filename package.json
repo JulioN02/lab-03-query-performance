@@ -1,0 +1,25 @@
+{
+  "name": "lab-03-query-performance",
+  "version": "1.0.0",
+  "description": "Laboratorio de rendimiento de consultas PostgreSQL - EXPLAIN ANALYZE, índices B-tree, compuestos y cubrientes",
+  "type": "module",
+  "scripts": {
+    "db:setup": "node --experimental-strip-types src/setup.ts --fresh",
+    "db:load": "node --experimental-strip-types src/load-data.ts",
+    "db:reset": "node --experimental-strip-types src/setup.ts --fresh",
+    "exp:baseline": "node --experimental-strip-types src/exp-01-baseline.ts",
+    "exp:explain": "node --experimental-strip-types src/exp-02-explain.ts",
+    "exp:index": "node --experimental-strip-types src/exp-03-index.ts",
+    "exp:covering": "node --experimental-strip-types src/exp-04-covering.ts",
+    "test": "node --test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "pg": "^8.13.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/pg": "^8.11.0",
+    "typescript": "^5.7.0"
+  }
+}

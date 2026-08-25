@@ -1,0 +1,908 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LAB-03 · Rendimiento de Consultas en PostgreSQL</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body><!-- ================= HEADER ================= -->
+<header class="hero">
+  <div class="wrap">
+    <span class="tag">● Laboratorio de Ingeniería · Temporada 1</span>
+    <h1>LAB-03 · <span class="accent">Rendimiento de Consultas</span> en PostgreSQL</h1>
+    <p class="sub">
+      Una tabla de reportes crece: 100 mil, <b>1 millón</b> y/o <b>10 millones</b> de filas. La
+      aplicación sigue funcionando normal, pero de pronto una consulta de reporte que antes tomaba
+      milisegundos ahora tarda <b>segundos</b>. Este dashboard narra el laboratorio completo: el
+      <b>problema</b> (la tabla creció y el plan de ejecución cambió), la <b>herramienta</b>
+      (<b>EXPLAIN ANALYZE</b> como brújula), el <b>índice B-tree</b> y su lección de
+      <b>selectividad</b>, el <b>compuesto</b> para reportes GROUP BY, el <b>cubriente</b> que responde
+      sin volver a la tabla, y el bonus anti-intuitivo: el índice simple que salió <b>0.8x más lento
+      que no tener nada</b>. Cada paso con datos medidos y una simulación animada que corre a la par.
+    </p>
+    <div class="chips">
+      <span class="chip">Stack: <b>Node 26 · PostgreSQL 16 · pg</b></span>
+      <span class="chip">DB: <b>lab_query_performance</b></span>
+      <span class="chip">Tabla: <b>large_table · 10M filas</b></span>
+      <span class="chip">Método: <b>EXPLAIN ANALYZE</b></span>
+      <span class="chip">Evidencia: <b>real, capturada</b></span>
+    </div>
+  </div>
+</header>
+
+<!-- ================= 01 · EL PROBLEMA ================= -->
+<section id="problema">
+  <div class="wrap">
+    <h2><span class="num">01</span> El problema: la tabla creció y la consulta se volvió lenta</h2>
+    <p class="lede">
+      Una tabla de reportes crece: 100 mil, 1 millón y/o 10 millones de filas. La aplicación sigue
+      funcionando normal, pero de pronto una consulta de reporte que antes tomaba
+      <b>milisegundos</b> ahora tarda <b>segundos</b>. El usuario dice <i>"el sistema anda lento"</i>.
+      ¿Es la red? ¿La aplicación? ¿La base de datos? <b>¿Qué consulta es la culpable?</b>
+    </p>
+
+    <div class="growth">
+      <div class="gch g1"><div class="k">100 mil filas</div><div class="v">instantáneo</div><div class="d">el reporte responde al instante</div></div>
+      <div class="gch g2"><div class="k">1 millón</div><div class="v">notable</div><div class="d">empieza a pesar</div></div>
+      <div class="gch g3"><div class="k">10 millones</div><div class="v">≈ 5.5 s</div><div class="d">la consulta de reporte se volvió lenta</div></div>
+    </div>
+
+    <div class="callout">
+      La intuición típica sería: <i>"hay que optimizar el código — cambiar el <code>SELECT *</code>,
+      agregar un <code>LIMIT</code>…"</i> pero el cuello de botella está <b>casi siempre en el plan de
+      ejecución</b>, ya sea porque cambió o nunca fue óptimo. El error más común es revisar el código
+      <b>sin entender primero qué se está haciendo a nivel de consulta</b>.
+    </div>
+
+    <div class="sol-code" id="code-problema" style="margin-top:20px">
+      <div class="code-tabs"><span class="tab-label">EJEMPLO</span></div>
+      <div class="code-view" style="border:1px solid var(--line); border-radius:var(--radius-2); overflow:hidden">
+        <div class="cline" data-phase="sql"><span class="ln">1</span><span class="cm">// Ejemplo de consulta de reporte</span></div>
+        <div class="cline" data-phase="sql"><span class="ln">2</span><span class="tx"><span class="v">SELECT *</span> FROM large_table WHERE category = <span class="v">'Electronics'</span>;</span></div>
+        <div class="cline" data-phase="sql"><span class="ln">3</span><span class="cm">// ↓ simulamos lo que sucede SIN hacer EXPLAIN ANALYZE</span></div>
+      </div>
+    </div>
+
+    <!-- ══════════ SIMULACIÓN (a): lo que sucede sin EXPLAIN ANALYZE ══════════ -->
+    <div class="sol-sim sim-host" id="sim-a" style="margin-top:18px">
+      <div class="sim-stats">
+        <div class="stat"><div class="k">Filas leídas</div><div class="v bad sim-read">—</div></div>
+        <div class="stat"><div class="k">Filas descartadas</div><div class="v warn sim-removed">—</div></div>
+        <div class="stat"><div class="k">Filas devueltas</div><div class="v info sim-rows">—</div></div>
+        <div class="stat"><div class="k">Tiempo</div><div class="v warn sim-time">—</div></div>
+      </div>
+      <div class="hblk-row sim-blocks" style="margin-bottom:12px"></div>
+      <div class="sim-txt">Sin <b>EXPLAIN ANALYZE</b> no se ve ningún plan: la consulta se ejecuta a ciegas. Presioná <b>▶ Correr simulación</b> para ver qué pasa adentro.</div>
+      <button class="btn-play sim-run">▶ Correr simulación</button>
+      <div class="sol-verdict" hidden></div>
+    </div>
+
+    <ol class="sol-steps">
+      <li>La tabla <code>large_table</code> tiene 10.000.000 de filas, ~1.000.000 por categoría (10 categorías, datos deterministas).</li>
+      <li>Se ejecuta <code>SELECT * FROM large_table WHERE category = 'Electronics'</code> — la consulta de reporte del problema.</li>
+      <li>Sin entender el plan, nadie sabe <b>qué</b> está pasando: solo se observa que el reporte tarda segundos.</li>
+    </ol>
+  </div>
+</section>
+
+<!-- ================= 02 · LA HERRAMIENTA: EXPLAIN ANALYZE ================= -->
+<section id="herramienta">
+  <div class="wrap">
+    <h2><span class="num">02</span> La herramienta: EXPLAIN ANALYZE</h2>
+    <p class="lede">
+      Para entender el panorama se puede usar la herramienta <b>EXPLAIN ANALYZE</b>, que sirve como
+      <b>brújula</b> para identificar qué sucede: <b>ejecuta la consulta de verdad</b> y muestra el
+      plan que PostgreSQL <b>realmente</b> usó.
+    </p>
+
+    <div class="card" style="margin-bottom:18px">
+      <h3>Aquí se determina — <code>scan</code> · <code>filtro</code> · <code>sort</code> · <code>join</code> · <code>agregación</code></h3>
+      <ul class="req-list">
+        <li><b>Costo estimado vs tiempo real</b> — lo que el planificador <em>predijo</em> contra lo que <em>pasó</em>.</li>
+        <li><b>Filas leídas</b> — cuántas filas tuvo que tocar realmente para responder.</li>
+        <li><b>Filas descartadas</b> — las que leyó y tiró (el trabajo invisible de una consulta).</li>
+        <li><b>Dónde se gasta el tiempo</b> — en qué nodo del plan se va el tiempo real.</li>
+      </ul>
+    </div>
+
+    <div class="sol-code" id="code-explain">
+      <div class="code-tabs"><span class="tab-label">código de la función real</span></div>
+      <div class="code-view">
+        <div class="cline" data-phase="fn"><span class="ln">1</span><span class="cm">// Un ejemplo de lo que hace EXPLAIN ANALYZE en la consulta</span></div>
+        <div class="cline" data-phase="fn"><span class="ln">2</span><span class="tx">export <span class="v">async function</span> explainAnalyze(text: string): Promise&lt;string&gt; {</span></div>
+        <div class="cline" data-phase="fn"><span class="ln">3</span><span class="tx">  const result = await pool.query(<span class="v">`EXPLAIN ANALYZE ${text}`</span>);</span></div>
+        <div class="cline" data-phase="fn"><span class="ln">4</span><span class="tx">  return result.rows.map((row: any) =&gt; row['QUERY PLAN']).join(<span class="v">'\n'</span>);</span></div>
+        <div class="cline" data-phase="fn"><span class="ln">5</span><span class="tx">}</span></div>
+      </div>
+    </div>
+
+    <div class="callout" style="margin-top:18px">
+      <b>EXPLAIN ANALYZE ejecuta la consulta de verdad.</b> Por eso los números de la derecha
+      (<code>actual time</code>, <code>rows=</code> reales, <code>loops=</code>) son los hechos, y los
+      de la izquierda (<code>cost=</code>, <code>rows=</code> estimados) son solo la estimación del
+      planificador.
+    </div>
+
+    <!-- ══════════ SIMULACIÓN (b): el plan anotado ══════════ -->
+    <div class="sol-sim sim-host" id="sim-b" style="margin-top:18px">
+      <div class="sim-stats">
+        <div class="stat"><div class="k">Filas leídas</div><div class="v bad sim-read">—</div></div>
+        <div class="stat"><div class="k">Descartadas por el filtro</div><div class="v warn sim-removed">—</div></div>
+        <div class="stat"><div class="k">Planning</div><div class="v info sim-plan">—</div></div>
+        <div class="stat"><div class="k">Execution Time</div><div class="v warn sim-time">—</div></div>
+      </div>
+      <div class="plan-lines">
+        <div class="pline" data-phase="0"><span class="p-node">Seq Scan on large_table</span>  (cost=0.00..<span class="p-num">211385.14</span> rows=<span class="p-warn">1004684</span> width=38) (actual time=20.620..<span class="p-bad">4799.594</span> rows=1000000 loops=1)</div>
+        <div class="pline" data-phase="1">  Filter: ((category)::text = 'Electronics'::text)</div>
+        <div class="pline" data-phase="2">  <span class="p-bad">Rows Removed by Filter: 9000000</span></div>
+        <div class="pline" data-phase="3"> </div>
+        <div class="pline" data-phase="4">Planning Time: 2.154 ms</div>
+        <div class="pline" data-phase="5">Execution Time: <span class="p-bad">5037.520 ms</span></div>
+      </div>
+      <div class="hblk-row sim-blocks" style="margin-bottom:12px"></div>
+      <div class="sim-txt">El plan anotado — cada bloque es ~1M de filas. Presioná <b>▶ Correr simulación</b> para ver cómo se lee el nodo.</div>
+      <button class="btn-play sim-run">▶ Correr simulación</button>
+      <div class="sol-verdict" hidden></div>
+    </div>
+
+    <div class="cmp-grid" style="margin-top:22px">
+      <div class="card">
+        <h3>KPI</h3>
+        <table class="keys">
+          <thead><tr><th>KPI</th><th>Valor</th></tr></thead>
+          <tbody>
+            <tr><td class="k">Filas en la tabla</td><td class="num">10.000.000</td></tr>
+            <tr><td class="k">Filas por categoría</td><td class="num">~1.000.000 (10 categorías, datos deterministas)</td></tr>
+            <tr><td class="k">Filas leídas por la consulta</td><td class="num">10.000.000</td></tr>
+            <tr><td class="k">Filas descartadas por el filtro</td><td class="num">9.000.000</td></tr>
+            <tr><td class="k">Tiempo de ejecución</td><td class="num">5037.52 ms</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="card">
+        <h3>El mismo plan, campo por campo</h3>
+        <table class="keys">
+          <thead><tr><th>Campo</th><th>Qué significa</th><th>En el plan de arriba</th></tr></thead>
+          <tbody>
+            <tr><td class="k"><code>Seq Scan on large_table</code></td><td>Método de acceso: escaneo secuencial (tabla completa)</td><td class="num">—</td></tr>
+            <tr><td class="k"><code>cost=0.00..211385.14</code></td><td>Costo estimado por el planificador (unidades abstractas)</td><td class="num">211 mil</td></tr>
+            <tr><td class="k"><code>rows=1004684</code></td><td>Filas estimadas de salida</td><td class="num">~1.004.684</td></tr>
+            <tr><td class="k"><code>actual time=16.467..5563.674</code></td><td>Tiempo real de inicio..fin del nodo (ms)</td><td class="num">~5.5 s</td></tr>
+            <tr><td class="k"><code>rows=1000000</code></td><td>Filas reales de salida</td><td class="num">1.000.000</td></tr>
+            <tr><td class="k"><code>Rows Removed by Filter: 9000000</code></td><td>Filas leídas y descartadas por el filtro</td><td class="num">9.000.000</td></tr>
+            <tr><td class="k"><code>loops=1</code></td><td>Cuántas veces se ejecutó el nodo</td><td class="num">1</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="callout" style="margin-top:22px">
+      Sin un índice en <code>category</code>, PostgreSQL <b>no tiene forma de saltar filas</b>: ejecuta
+      un <b>sequential scan</b> y lee <b>las 10.000.000 de filas una por una</b>, descartando las que
+      no coinciden. Un <code>SELECT *</code> que devuelve solo 1M de filas <b>paga por leer las otras
+      9M que descarta</b>. El tiempo de lectura crece linealmente a medida que el tamaño de la tabla
+      también (<b>O(n)</b>): 5.5 segundos y 5037.52 ms de Execution Time.
+    </div>
+  </div>
+</section>
+
+<!-- ================= 03 · POSIBLES SOLUCIONES AL PROBLEMA ================= -->
+<section id="soluciones">
+  <div class="wrap">
+    <h2><span class="num">03</span> Posibles soluciones al problema</h2>
+    <p class="lede">
+      Si el problema es el <b>plan de ejecución</b>, la solución es <b>datalaminar lo que PostgreSQL
+      puede saltar</b>: índices. Pero no cualquier índice. Estas son las posibles soluciones, de la más
+      simple a la más sofisticada, cada una con su plan resultante y sus números medidos.
+    </p>
+
+    <!-- (a) SIN ÍNDICE: SEQUENTIAL SCAN -->
+    <div class="card" style="margin-bottom:28px">
+      <h3><span class="sol-num k" style="display:inline-flex; margin-right:8px">(a)</span> Sin índice: Sequential Scan</h3>
+      <p class="sol-desc" style="margin:0 0 10px">
+        Sin índice en <code>category</code>, PostgreSQL no tiene forma de localizar las filas: lee la
+        tabla <b>de punta a punta</b>, aplica el filtro a cada fila y se queda con las que hacen
+        <b>match</b>. Es el plan de los 5037.52 ms de la sección 02 — el punto de partida de todo el problema.
+      </p>
+      <div class="step-flow">
+        <span class="step conflict">1 · Seq Scan (10M filas)</span><span class="arrow">→</span>
+        <span class="step conflict">2 · 9M descartadas</span><span class="arrow">→</span>
+        <span class="step conflict">3 · ~5.5 s</span>
+      </div>
+    </div>
+
+    <!-- ══════════ (b) EL ÍNDICE B-TREE: ANTES / DESPUÉS ══════════ -->
+    <article class="solution" id="sol-btree">
+      <header class="sol-head">
+        <div>
+          <h3><span class="sol-num warn">(b)</span> El índice B-Tree: Antes/Después — Lección de Selectividad <span class="sol-tag warn">⚠️ 1.3X · BAJA SELECTIVIDAD</span></h3>
+          <p class="sol-desc">
+            El <b>índice B-tree</b> es la estructura de índice por defecto de PostgreSQL: un árbol
+            balanceado que ordena los valores de <code>category</code> y permite localizar las filas
+            que matchean <b>sin recorrer la tabla</b>. Pero elegir un índice "por si acaso" no es
+            gratis, y este experimento lo demuestra: la <b>misma consulta</b> antes y después de crear
+            el índice, midiendo el cambio de plan. La lección incómoda es la primera: como
+            <code>category</code> tiene <b>baja selectividad</b> (~1M de 10M = 10%), el tiempo pasa de
+            5547.21 ms a 4399.28 ms — solo <b>1.3x</b>.
+          </p>
+        </div>
+        <div class="sol-result">medido<b>5547.21 → 4399.28 ms</b><span class="verdict-chip warn">1.3x · 20.7% reducción</span></div>
+      </header>
+
+      <div class="sol-grid">
+        <div class="sol-code">
+          <div class="code-tabs">
+            <button class="tab-btn active" data-lang="sql">SQL</button>
+            <button class="tab-btn" data-lang="ts">TypeScript (ilustrativo)</button>
+          </div>
+          <div class="code-view" data-lang="sql">
+            <div class="cline" data-phase="antes"><span class="ln">1</span><span class="cm">-- ANTES: sin índice → Seq Scan (examina 10M filas)</span></div>
+            <div class="cline" data-phase="antes"><span class="ln">2</span><span class="tx">EXPLAIN ANALYZE SELECT * FROM large_table WHERE category = 'Electronics';</span></div>
+            <div class="cline" data-phase="antes"><span class="ln">3</span><span class="cm">-- Seq Scan … actual time=16.467..5563.674 rows=1000000 · Rows Removed: 9000000</span></div>
+            <div class="cline" data-phase="index"><span class="ln">4</span><span class="tx"><span class="v">CREATE INDEX idx_large_table_category</span> ON large_table(category);</span></div>
+            <div class="cline" data-phase="index"><span class="ln">5</span><span class="cm">-- índice creado en 44.45s</span></div>
+            <div class="cline" data-phase="index"><span class="ln">6</span><span class="tx"><span class="v">ANALYZE large_table;</span>  <span class="cm">-- actualiza estadísticas del planificador</span></span></div>
+            <div class="cline" data-phase="despues"><span class="ln">7</span><span class="cm">-- DESPUÉS: con B-tree → Bitmap Heap Scan</span></div>
+            <div class="cline" data-phase="despues"><span class="ln">8</span><span class="tx">EXPLAIN ANALYZE SELECT * FROM large_table WHERE category = 'Electronics';</span></div>
+            <div class="cline" data-phase="despues"><span class="ln">9</span><span class="cm">-- Bitmap Heap Scan … Rows Removed by Index Recheck: 3440885</span></div>
+            <div class="cline" data-phase="compare"><span class="ln">10</span><span class="cm">-- 5547.21ms → 4399.28ms = 1.3x más rápido (20.7% reducción) · baja selectividad</span></div>
+          </div>
+          <div class="code-view" data-lang="ts" hidden>
+            <div class="cline" data-phase="antes"><span class="ln">1</span><span class="cm">// Código ilustrativo (Node 26 + pg)</span></div>
+            <div class="cline" data-phase="antes"><span class="ln">2</span><span class="tx">const planAntes = await explainAnalyze(</span></div>
+            <div class="cline" data-phase="antes"><span class="ln">3</span><span class="tx">  `SELECT * FROM large_table WHERE category = 'Electronics'`);</span></div>
+            <div class="cline" data-phase="antes"><span class="ln">4</span><span class="cm">// ANTES → Seq Scan · 5547.21ms</span></div>
+            <div class="cline" data-phase="index"><span class="ln">5</span><span class="tx">await client.query(</span></div>
+            <div class="cline" data-phase="index"><span class="ln">6</span><span class="tx">  'CREATE INDEX idx_large_table_category ON large_table(category)');</span></div>
+            <div class="cline" data-phase="index"><span class="ln">7</span><span class="cm">// ✅ índice creado en 44.45s · ANALYZE ejecutado</span></div>
+            <div class="cline" data-phase="despues"><span class="ln">8</span><span class="tx">const planDespues = await explainAnalyze(</span></div>
+            <div class="cline" data-phase="despues"><span class="ln">9</span><span class="tx">  `SELECT * FROM large_table WHERE category = 'Electronics'`);</span></div>
+            <div class="cline" data-phase="despues"><span class="ln">10</span><span class="cm">// DESPUÉS → Bitmap Heap Scan · 4399.28ms</span></div>
+            <div class="cline" data-phase="compare"><span class="ln">11</span><span class="cm">// Mejora 1.3x (20.7%) · baja selectividad: 1M/10M = 10%</span></div>
+          </div>
+        </div>
+
+        <div class="sol-sim sim-host" id="sim-c">
+          <div class="sim-stats">
+            <div class="stat"><div class="k">ANTES</div><div class="v bad sim-before">—</div></div>
+            <div class="stat"><div class="k">DESPUÉS</div><div class="v good sim-after">—</div></div>
+            <div class="stat"><div class="k">Mejora</div><div class="v warn sim-speedup">—</div></div>
+          </div>
+          <div class="hblk-row sim-blocks" style="margin-bottom:12px"></div>
+          <div class="sim-txt">Antes/después del B-tree. Presioná <b>▶ Correr simulación</b>.</div>
+          <button class="btn-play sim-run">▶ Correr simulación</button>
+          <div class="sol-verdict" hidden></div>
+        </div>
+      </div>
+
+      <ol class="sol-steps">
+        <li>ANTES: la consulta corre sin índice → <b>Seq Scan</b> examina las 10M filas → 5547.21 ms.</li>
+        <li>Se crea <code>idx_large_table_category</code> (B-tree en category): <b>44.45s</b> + <code>ANALYZE large_table;</code>.</li>
+        <li>DESPUÉS: el plan cambia a <b>Bitmap Heap Scan</b> — el índice encuentra ~1M filas → 4399.28 ms.</li>
+        <li>Resultado: solo <b>1.3x (20.7% reducción)</b>. La <b>selectividad</b> importa: devolver el 10% de la tabla sigue siendo caro.</li>
+      </ol>
+      <div class="sol-verdict" hidden></div>
+
+      <div class="insight">
+        <div class="insight-tag">⚠️ La lección de la selectividad</div>
+        El índice evitó leer las 9M de filas que no matchean — pero como el filtro devuelve el
+        <b>10% de la tabla</b> (1M/10M), igual tuvo que materializar ~1M de filas (y con
+        <code>SELECT *</code> hay que ir al heap por todas las columnas). Ningún índice simple
+        convierte esta consulta en mágica: <b>1.3x es el dato honesto</b>.
+      </div>
+    </article>
+
+    <!-- ══════════ (c) ÍNDICE COMPUESTO: REPORTE GROUP BY ══════════ -->
+    <article class="solution" id="sol-compuesto">
+      <header class="sol-head">
+        <div>
+          <h3><span class="sol-num o">(c)</span> Índice compuesto: Reporte GROUP BY <span class="sol-tag good">✅ 4.6X · INDEX ONLY SCAN</span></h3>
+          <p class="sol-desc">
+            <b>Aquí va una explicación previa general de qué se trata:</b> las consultas de reporte no
+            piden <code>SELECT *</code>: <b>agrupan</b> (<code>GROUP BY</code>), <b>agregan</b>
+            (<code>AVG</code>, <code>COUNT</code>), <b>ordenan</b>. Ahí el juego cambia: si el índice
+            contiene <b>todas las columnas que la consulta necesita</b>, PostgreSQL puede responder
+            <b>sin volver a la tabla</b> — un <b>Index Only Scan</b>. Este experimento compara el
+            reporte sin índice (1917.99 ms), con índice simple (1856.86 ms, un no-op 1.0x) y con
+            índice <b>compuesto (category, value)</b> (414.01 ms = 4.6x).
+          </p>
+        </div>
+        <div class="sol-result">medido<b>1917.99 → 1856.86 → 414.01 ms</b><span class="verdict-chip good">compuesto 4.6x</span><span class="verdict-chip warn">simple 1.0x</span></div>
+      </header>
+
+      <div class="sol-grid">
+        <div class="sol-code">
+          <div class="code-tabs">
+            <button class="tab-btn active" data-lang="sql">SQL</button>
+            <button class="tab-btn" data-lang="ts">TypeScript (ilustrativo)</button>
+          </div>
+          <div class="code-view" data-lang="sql">
+            <div class="cline" data-phase="reporte"><span class="ln">1</span><span class="cm">-- Reporte: promedio y conteo por categoría</span></div>
+            <div class="cline" data-phase="reporte"><span class="ln">2</span><span class="tx"><span class="v">SELECT category, AVG(value), COUNT(*)</span> FROM large_table</span></div>
+            <div class="cline" data-phase="reporte"><span class="ln">3</span><span class="tx">WHERE category = 'Electronics' <span class="v">GROUP BY category</span>;</span></div>
+            <div class="cline" data-phase="casoA"><span class="ln">4</span><span class="cm">-- CASO A · sin índice → Seq Scan → 1917.99ms</span></div>
+            <div class="cline" data-phase="casoB"><span class="ln">5</span><span class="tx">CREATE INDEX idx_large_table_category ON large_table(category);</span></div>
+            <div class="cline" data-phase="casoB"><span class="ln">6</span><span class="cm">-- CASO B · índice simple → Bitmap Heap Scan → 1856.86ms (1.0x — casi nada)</span></div>
+            <div class="cline" data-phase="casoC"><span class="ln">7</span><span class="tx">CREATE INDEX idx_large_table_category_value ON large_table(category, value);</span></div>
+            <div class="cline" data-phase="casoC"><span class="ln">8</span><span class="cm">-- CASO C · índice compuesto → Index Only Scan → 414.01ms (4.6x)</span></div>
+            <div class="cline" data-phase="casoC"><span class="ln">9</span><span class="cm">-- el índice cubre WHERE + SELECT: el plan responde sin volver al heap</span></div>
+          </div>
+          <div class="code-view" data-lang="ts" hidden>
+            <div class="cline" data-phase="reporte"><span class="ln">1</span><span class="cm">// Código ilustrativo (Node 26 + pg)</span></div>
+            <div class="cline" data-phase="reporte"><span class="ln">2</span><span class="tx">const q = `SELECT category, AVG(value), COUNT(*) FROM large_table</span></div>
+            <div class="cline" data-phase="reporte"><span class="ln">3</span><span class="tx">  WHERE category = 'Electronics' GROUP BY category`;</span></div>
+            <div class="cline" data-phase="casoA"><span class="ln">4</span><span class="cm">// CASO A → Seq Scan → 1919?... 1917.99ms</span></div>
+            <div class="cline" data-phase="casoB"><span class="ln">5</span><span class="tx">await client.query('CREATE INDEX idx_large_table_category ON large_table(category)');</span></div>
+            <div class="cline" data-phase="casoB"><span class="ln">6</span><span class="cm">// CASO B → Bitmap Heap Scan → 1856.86ms (1.0x)</span></div>
+            <div class="cline" data-phase="casoC"><span class="ln">7</span><span class="tx">await client.query(</span></div>
+            <div class="cline" data-phase="casoC"><span class="ln">8</span><span class="tx">  'CREATE INDEX idx_large_table_category_value ON large_table(category, value)');</span></div>
+            <div class="cline" data-phase="casoC"><span class="ln">9</span><span class="cm">// CASO C → Index Only Scan → 414.01ms (4.6x) · Heap Fetches: 71010</span></div>
+          </div>
+        </div>
+
+        <div class="sol-sim sim-host" id="sim-d">
+          <div class="sim-stats">
+            <div class="stat"><div class="k">Sin índice</div><div class="v bad sim-base">—</div></div>
+            <div class="stat"><div class="k">Compuesto</div><div class="v good sim-best">—</div></div>
+            <div class="stat"><div class="k">Mejora</div><div class="v good sim-speedup">—</div></div>
+          </div>
+          <div class="bars sim-bars"></div>
+          <div class="sim-txt">Reporte GROUP BY: 3 escenarios. Presioná <b>▶ Correr simulación</b>.</div>
+          <button class="btn-play sim-run">▶ Correr simulación</button>
+          <div class="sol-verdict" hidden></div>
+        </div>
+      </div>
+
+      <ol class="sol-steps">
+        <li>CASO A · sin índice → <b>Seq Scan</b> → 1917.99 ms.</li>
+        <li>CASO B · índice simple (category) → <b>Bitmap Heap Scan</b> → 1856.86 ms — <b>1.0x</b>: casi no cambia nada, la consulta también necesita <code>value</code>.</li>
+        <li>CASO C · índice compuesto (category, value) → <b>Index Only Scan</b> → 414.01 ms.</li>
+        <li>Resultado: <b>4.6x</b>. El índice cubre todas las columnas del WHERE + SELECT; el plan responde desde el índice (<code>Heap Fetches: 71010</code> residuales).</li>
+      </ol>
+      <div class="sol-verdict" hidden></div>
+
+      <div class="callout">
+        El <b>índice simple fue un no-op: 1.0x</b>. La lección del Axioma 6: indexe las columnas que la
+        consulta <b>realmente usa</b>. Para este reporte la columna correcta es
+        <code>(category, value)</code> — no <code>category</code> sola, porque el <code>SELECT</code>
+        pide <code>AVG(value)</code> y sin <code>value</code> en el índice hay que ir al heap a buscarlo.
+      </div>
+    </article>
+
+    <!-- ══════════ (d) ÍNDICE CUBRIENTE ══════════ -->
+    <article class="solution" id="sol-cubriente">
+      <header class="sol-head">
+        <div>
+          <h3><span class="sol-num o">(d)</span> Índice cubriente: Responder sin volver a la tabla <span class="sol-tag good">✅ 2.9X · SIN HEAP</span></h3>
+          <p class="sol-desc">
+            <b>Aquí va una explicación previa general de qué se trata:</b> para la misma consulta de
+            reporte, el <b>índice compuesto (category, value, id)</b> logra un <b>Index Only Scan
+            puro</b>: responde <b>sin volver a la tabla</b>. Y hay un <b>bonus anti-intuitivo</b>: el
+            <b>índice simple salió 0.8x — más lento que no tener nada</b>. La evidencia desmiente
+            <i>"más índices = más rápido"</i>.
+          </p>
+        </div>
+        <div class="sol-result">medido<b>2531.10 → 3236.70 → 866.52 ms</b><span class="verdict-chip good">compuesto 2.9x</span><span class="verdict-chip bad">simple 0.8x</span></div>
+      </header>
+
+      <div class="sol-grid">
+        <div class="sol-code">
+          <div class="code-tabs">
+            <button class="tab-btn active" data-lang="sql">SQL</button>
+            <button class="tab-btn" data-lang="ts">TypeScript (ilustrativo)</button>
+          </div>
+          <div class="code-view" data-lang="sql">
+            <div class="cline" data-phase="setup"><span class="ln">1</span><span class="cm">-- Reporte de categorías (avgs + conteo por category)</span></div>
+            <div class="cline" data-phase="setup"><span class="ln">2</span><span class="tx">SELECT category, AVG(value) as avg_value, COUNT(*) as count</span></div>
+            <div class="cline" data-phase="setup"><span class="ln">3</span><span class="tx">FROM large_table WHERE category = 'Electronics' <span class="v">GROUP BY category</span>;</span></div>
+            <div class="cline" data-phase="casoA"><span class="ln">4</span><span class="cm">-- CASO A · sin índice → Parallel Seq Scan → 2531.10ms</span></div>
+            <div class="cline" data-phase="casoB"><span class="ln">5</span><span class="tx">CREATE INDEX idx_category ON large_table(category);</span></div>
+            <div class="cline" data-phase="casoB"><span class="ln">6</span><span class="cm">-- CASO B · simple → Bitmap Heap Scan → 3236.70ms (0.8x ← ¡más lento!)</span></div>
+            <div class="cline" data-phase="casoC"><span class="ln">7</span><span class="tx">CREATE INDEX idx_category_value ON large_table(category, value);</span></div>
+            <div class="cline" data-phase="casoC"><span class="ln">8</span><span class="cm">-- CASO C · compuesto → Parallel Index Only Scan → 866.52ms (2.9x)</span></div>
+            <div class="cline" data-phase="cubriente"><span class="ln">9</span><span class="tx">CREATE INDEX idx_category_covering ON large_table(category, value, id);</span></div>
+            <div class="cline" data-phase="cubriente"><span class="ln">10</span><span class="cm">-- Patrón cubriente: SELECT pide solo columnas del índice →</span></div>
+            <div class="cline" data-phase="cubriente"><span class="ln">11</span><span class="tx">EXPLAIN ANALYZE SELECT category, value FROM large_table</span></div>
+            <div class="cline" data-phase="cubriente"><span class="ln">12</span><span class="tx">  WHERE category = 'Electronics';  <span class="cm">-- Index Only Scan: sin heap</span></span></div>
+          </div>
+          <div class="code-view" data-lang="ts" hidden>
+            <div class="cline" data-phase="setup"><span class="ln">1</span><span class="cm">// Código ilustrativo (Node 26 + pg)</span></div>
+            <div class="cline" data-phase="setup"><span class="ln">2</span><span class="tx">const q = `SELECT category, AVG(value) as avg_value, COUNT(*) as count</span></div>
+            <div class="cline" data-phase="setup"><span class="ln">3</span><span class="tx">  FROM large_table WHERE category = 'Electronics' GROUP BY category`;</span></div>
+            <div class="cline" data-phase="casoA"><span class="ln">4</span><span class="cm">// CASO A → Parallel Seq Scan → 2531.10ms</span></div>
+            <div class="cline" data-phase="casoB"><span class="ln">5</span><span class="tx">await client.query('CREATE INDEX idx_category ON large_table(category)');</span></div>
+            <div class="cline" data-phase="casoB"><span class="ln">6</span><span class="cm">// CASO B → Bitmap Heap Scan → 3236.70ms (0.8x, más lento que sin nada)</span></div>
+            <div class="cline" data-phase="casoC"><span class="ln">7</span><span class="tx">await client.query('CREATE INDEX idx_category_value ON large_table(category, value)');</span></div>
+            <div class="cline" data-phase="casoC"><span class="ln">8</span><span class="cm">// CASO C → Parallel Index Only Scan → 866.52ms (2.9x)</span></div>
+            <div class="cline" data-phase="cubriente"><span class="ln">9</span><span class="tx">await client.query(</span></div>
+            <div class="cline" data-phase="cubriente"><span class="ln">10</span><span class="tx">  'CREATE INDEX idx_category_covering ON large_table(category, value, id)');</span></div>
+            <div class="cline" data-phase="cubriente"><span class="ln">11</span><span class="cm">// SELECT category, value → Index Only Scan · responde sin tocar el heap</span></div>
+          </div>
+        </div>
+
+        <div class="sol-sim sim-host" id="sim-e">
+          <div class="sim-stats">
+            <div class="stat"><div class="k">Sin índice</div><div class="v bad sim-base">—</div></div>
+            <div class="stat"><div class="k">Compuesto</div><div class="v good sim-best">—</div></div>
+            <div class="stat"><div class="k">Cubriente</div><div class="v info sim-cover">—</div></div>
+          </div>
+          <div class="bars sim-bars"></div>
+          <div class="sim-txt">Reporte + SELECT de solo columnas del índice. Presioná <b>▶ Correr simulación</b>.</div>
+          <button class="btn-play sim-run">▶ Correr simulación</button>
+          <div class="sol-verdict" hidden></div>
+        </div>
+      </div>
+
+      <ol class="sol-steps">
+        <li>CASO A · sin índice → <b>Parallel Seq Scan</b> → 2531.10 ms.</li>
+        <li>CASO B · índice simple → <b>Bitmap Heap Scan</b> → 3236.70 ms: <b>0.8x</b>, peor que no tener nada (bitmap + recheck ~1.1M de filas).</li>
+        <li>CASO C · índice compuesto → <b>Parallel Index Only Scan</b> → 866.52 ms = <b>2.9x</b>.</li>
+        <li>CASO D · índice cubriente (category, value, id): el <code>SELECT category, value</code> se responde <b>desde el índice</b> — <b>Index Only Scan: sin heap</b>.</li>
+      </ol>
+      <div class="sol-verdict" hidden></div>
+
+      <div class="insight">
+        <div class="insight-tag">⚠️ 0.8x — el índice equivocado</div>
+        Resultado real y anti-intuitivo: el <b>índice simple fue 0.8x más lento</b> que no tener nada
+        (3236.70 ms vs 2531.10 ms). Pagó el costo de <b>construir el bitmap + recheck</b> y después
+        igual volvió al heap a buscar <code>value</code>. No es <i>"más índices = más rápido"</i>: es
+        <b>el índice correcto para la consulta</b>.
+      </div>
+    </article>
+  </div>
+</section>
+
+<!-- ================= 04 · COMPARACIÓN DE TODAS LAS FORMAS ================= -->
+<section id="comparacion">
+  <div class="wrap">
+    <h2><span class="num">04</span> Comparación de todas las formas</h2>
+    <p class="lede">
+      La misma consulta de reporte contra las <b>cuatro formas</b> de ejecutarla: sin índice, con
+      índice simple, compuesto y cubriente. Los números son la evidencia: <b>más índices no siempre es
+      más rápido</b> — el caso B (simple) es más lento que no tener nada.
+    </p>
+
+    <div class="sol-code" id="code-comparacion">
+      <div class="code-tabs">
+        <button class="tab-btn active" data-lang="sql">SQL</button>
+        <button class="tab-btn" data-lang="ts">TypeScript (ilustrativo)</button>
+      </div>
+      <div class="code-view" data-lang="sql">
+        <div class="cline" data-phase="reporte"><span class="ln">1</span><span class="cm">-- Reporte de categorías (avgs + conteo por category)</span></div>
+        <div class="cline" data-phase="reporte"><span class="ln">2</span><span class="tx">SELECT category, AVG(value) as avg_value, COUNT(*) as count</span></div>
+        <div class="cline" data-phase="reporte"><span class="ln">3</span><span class="tx">FROM large_table WHERE category = 'Electronics' <span class="v">GROUP BY category</span>;</span></div>
+        <div class="cline" data-phase="casoA"><span class="ln">4</span><span class="cm">-- CASO A · sin índice → Parallel Seq Scan → 2531.10ms</span></div>
+        <div class="cline" data-phase="casoB"><span class="ln">5</span><span class="tx">CREATE INDEX idx_category ON large_table(category);</span></div>
+        <div class="cline" data-phase="casoB"><span class="ln">6</span><span class="cm">-- CASO B · simple → Bitmap Heap Scan → 3236.70ms (0.8x ← ¡más lento!)</span></div>
+        <div class="cline" data-phase="casoC"><span class="ln">7</span><span class="tx">CREATE INDEX idx_category_value ON large_table(category, value);</span></div>
+        <div class="cline" data-phase="casoC"><span class="ln">8</span><span class="cm">-- CASO C · compuesto → Parallel Index Only Scan → 866.52ms (2.9x)</span></div>
+        <div class="cline" data-phase="cubriente"><span class="ln">9</span><span class="tx">CREATE INDEX idx_category_covering ON large_table(category, value, id);</span></div>
+        <div class="cline" data-phase="cubriente"><span class="ln">10</span><span class="cm">-- Patrón cubriente: SELECT pide solo columnas del índice →</span></div>
+        <div class="cline" data-phase="cubriente"><span class="ln">11</span><span class="tx">EXPLAIN ANALYZE SELECT category, value FROM large_table</span></div>
+        <div class="cline" data-phase="cubriente"><span class="ln">12</span><span class="tx">  WHERE category = 'Electronics';  <span class="cm">-- Index Only Scan: sin heap</span></span></div>
+      </div>
+      <div class="code-view" data-lang="ts" hidden>
+        <div class="cline" data-phase="reporte"><span class="ln">1</span><span class="cm">// Código ilustrativo (Node 26 + pg) — las 4 formas</span></div>
+        <div class="cline" data-phase="reporte"><span class="ln">2</span><span class="tx">const q = `SELECT category, AVG(value) as avg_value, COUNT(*) as count</span></div>
+        <div class="cline" data-phase="reporte"><span class="ln">3</span><span class="tx">  FROM large_table WHERE category = 'Electronics' GROUP BY category`;</span></div>
+        <div class="cline" data-phase="casoA"><span class="ln">4</span><span class="cm">// A · sin índice → Parallel Seq Scan → 2531.10ms</span></div>
+        <div class="cline" data-phase="casoB"><span class="ln">5</span><span class="tx">await client.query('CREATE INDEX idx_category ON large_table(category)');</span></div>
+        <div class="cline" data-phase="casoB"><span class="ln">6</span><span class="cm">// B · simple → Bitmap Heap Scan → 3236.70ms (0.8x ← ¡más lento!)</span></div>
+        <div class="cline" data-phase="casoC"><span class="ln">7</span><span class="tx">await client.query('CREATE INDEX idx_category_value ON large_table(category, value)');</span></div>
+        <div class="cline" data-phase="casoC"><span class="ln">8</span><span class="cm">// C · compuesto → Parallel Index Only Scan → 866.52ms (2.9x)</span></div>
+        <div class="cline" data-phase="cubriente"><span class="ln">9</span><span class="tx">await client.query(</span></div>
+        <div class="cline" data-phase="cubriente"><span class="ln">10</span><span class="tx">  'CREATE INDEX idx_category_covering ON large_table(category, value, id)');</span></div>
+        <div class="cline" data-phase="cubriente"><span class="ln">11</span><span class="cm">// SELECT category, value → Index Only Scan · responde sin tocar el heap</span></div>
+      </div>
+    </div>
+
+    <!-- ══════════ SIMULACIÓN (f): las 4 formas lado a lado ══════════ -->
+    <div class="sol-sim sim-host" id="sim-f">
+      <div class="plan-lines" style="margin-bottom:12px">
+        <div class="pline" data-phase="reporte"><span class="cm">-- Reporte: SELECT category, AVG(value) as avg_value, COUNT(*) FROM large_table WHERE category='Electronics' GROUP BY category;</span></div>
+      </div>
+      <div class="forms-grid" id="formsGrid">
+        <div class="form-card" data-case="A">
+          <div class="fc-tag">CASO A · sin índice</div>
+          <div class="fc-node">Parallel Seq Scan</div>
+          <div class="fc-time">2531.10 ms</div>
+          <div class="fc-badge">—</div>
+        </div>
+        <div class="form-card" data-case="B">
+          <div class="fc-tag">CASO B · simple</div>
+          <div class="fc-node">Bitmap Heap Scan</div>
+          <div class="fc-time">3236.70 ms</div>
+          <div class="fc-badge">0.8x ← ¡más lento!</div>
+        </div>
+        <div class="form-card" data-case="C">
+          <div class="fc-tag">CASO C · compuesto</div>
+          <div class="fc-node">Parallel Index Only Scan</div>
+          <div class="fc-time">866.52 ms</div>
+          <div class="fc-badge">2.9x</div>
+        </div>
+        <div class="form-card" data-case="D">
+          <div class="fc-tag">CASO D · cubriente</div>
+          <div class="fc-node">Index Only Scan</div>
+          <div class="fc-time">sin heap</div>
+          <div class="fc-badge">✅ 100% índice</div>
+        </div>
+      </div>
+      <div class="sim-txt">Las 4 formas de ejecutar el mismo reporte. Presioná <b>▶ Correr simulación</b>.</div>
+      <button class="btn-play sim-run">▶ Correr simulación</button>
+      <div class="sol-verdict" hidden></div>
+    </div>
+
+    <div class="callout" style="margin-top:18px">
+      <b>¿De dónde sale la lentitud del caso B?</b> El plan <code>Bitmap Heap Scan</code> construyó el
+      bitmap (<code>Bitmap Index Scan</code>: <b>399 ms</b>) y después igual tuvo que volver al heap
+      por <code>value</code>, con recheck de <b>~1.1M filas</b>. Pagó el costo del índice <b>y</b> el
+      costo de la tabla. El detalle completo está en la sección 06.
+    </div>
+  </div>
+</section>
+
+<!-- ================= 05 · RESULTADOS MEDIDOS (EVIDENCIA REAL) ================= -->
+<section id="resultados">
+  <div class="wrap">
+    <h2><span class="num">05</span> Resultados medidos (evidencia real)</h2>
+    <p class="lede">
+      Tabla <code>large_table</code> con <b>10.000.000 de filas</b> (~1M por categoría) en
+      <code>lab_query_performance</code> — <code>id SERIAL PK · name VARCHAR(100) · category
+      VARCHAR(50) · value NUMERIC(10,2) · created_at TIMESTAMP</code>. PostgreSQL 16, TypeScript
+      nativo (Node 26) con <code>pg</code>. Cada experimento ejecuta <code>EXPLAIN ANALYZE</code>
+      sobre los datos reales y captura sus salidas en <code>docs/output-*.txt</code>. Los tiempos son
+      por nodo de scan (<code>actual time</code> fin − inicio). <code>ANALYZE</code> después de crear
+      cada índice.
+    </p>
+    <div class="card">
+      <table class="evidence">
+        <thead>
+          <tr><th>Escenario</th><th>Consulta</th><th>Sin índice</th><th>Con índice (mejor)</th><th>Tiempos (ms)</th><th>Mejora</th><th>Resultado</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>01 · Línea base <span class="tag bad" style="margin-left:4px">❌ SEQ SCAN</span></td>
+            <td><code>SELECT * WHERE category='Electronics'</code></td>
+            <td>Seq Scan</td><td>—</td>
+            <td class="num">4778.97 – 5936.61</td><td class="num">—</td>
+            <td>Examina 10M, devuelve 1M · O(n): el tiempo crece con la tabla</td>
+          </tr>
+          <tr>
+            <td>02 · B-tree simple <span class="tag warn" style="margin-left:4px">⚠️ 1.3X</span></td>
+            <td><code>SELECT * WHERE category='Electronics'</code></td>
+            <td>Seq Scan</td><td>Bitmap Heap Scan</td>
+            <td class="num">5547.21 → 4399.28</td><td class="num">1.3x</td>
+            <td>20.7% reducción · <b>baja selectividad</b>: 1M/10M = 10%</td>
+          </tr>
+          <tr>
+            <td>03 · Compuesto <span class="tag good" style="margin-left:4px">✅ 4.6X</span></td>
+            <td><code>SELECT category, AVG(value), COUNT(*) … GROUP BY</code></td>
+            <td>Seq Scan</td><td>Index Only Scan (category, value)</td>
+            <td class="num">1917.99 → 1856.86 → 414.01</td><td class="num">4.6x</td>
+            <td>simple 1.0x · compuesto 4.6x · <code>Heap Fetches: 71010</code></td>
+          </tr>
+          <tr>
+            <td>04 · Cubriente <span class="tag good" style="margin-left:4px">✅ 2.9X</span></td>
+            <td><code>reporte + SELECT category, value</code></td>
+            <td>Seq Scan</td><td>Index Only Scan (category, value, id)</td>
+            <td class="num">2531.10 → 3236.70 → 866.52</td><td class="num">2.9x</td>
+            <td>simple <b>0.8x (más lento)</b> · compuesto 2.9x · cubriente responde sin heap</td>
+          </tr>
+          <tr>
+            <td>Tests <span class="tag good" style="margin-left:4px">✅ 4/4 PASS</span></td>
+            <td><code>node --test</code> (invariantes)</td>
+            <td>Seq Scan</td><td>Index Only Scan (category, value)</td>
+            <td class="num">5175.84 → 951.10</td><td class="num">5.4x</td>
+            <td>invariante ≥ 2x cumplida · corrida capturada en <code>output-test.txt</code></td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="lede" style="margin:12px 0 0">
+        <b>Tests</b>: <span class="verdict-chip good">4/4 pass</span> — invariantes con
+        <code>node:test</code>: (1) tabla con datos, (2) sin índice → <code>Seq Scan</code>, (3) con
+        índice → <code>Index Scan</code>/<code>Bitmap</code>, (4) el índice cubriente debe ser
+        <b>≥ 2x</b> más rápido (en la corrida capturada: <code>5175.84ms → 951.10ms = 5.4x</code>).
+        <b>Typecheck</b>: limpio (<code>npm run typecheck</code>). Salidas completas en
+        <code>docs/output-01-baseline.txt</code> … <code>output-04-covering.txt</code> +
+        <code>output-test.txt</code>.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 06 · ¿POR QUÉ EL ÍNDICE SIMPLE FUE 0.8X? ================= -->
+<section id="por-que-08x">
+  <div class="wrap">
+    <h2><span class="num">06</span> ¿Por qué el índice simple fue 0.8x (más lento)?</h2>
+    <p class="lede">
+      El plan <code>Bitmap Heap Scan</code> construyó el bitmap (<code>Bitmap Index Scan</code>:
+      <b>399 ms</b>) y después igual tuvo que <b>volver al heap</b> por <code>value</code>, con recheck
+      de <b>~1.1M filas</b>. Pagó el costo del índice <b>y</b> el costo de la tabla. La consulta pedía
+      <code>AVG(value)</code>: sin <code>value</code> en el índice, el índice <b>no cubre la
+      consulta</b>.
+    </p>
+    <div class="step-flow">
+      <span class="step replay">1 · Bitmap Index Scan → 399 ms</span><span class="arrow">→</span>
+      <span class="step conflict">2 · vuelve al heap por value</span><span class="arrow">→</span>
+      <span class="step block">3 · recheck ~1.1M filas</span><span class="arrow">→</span>
+      <span class="step conflict">4 · 3236.70 ms &gt; 2531.10 ms (0.8x)</span>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 07 · CUÁNTO IMPORTA LA CONSULTA ================= -->
+<section id="consulta">
+  <div class="wrap">
+    <h2><span class="num">07</span> Cuánto importa la consulta (y no el índice "por si acaso")</h2>
+    <p class="lede">
+      El mismo índice B-tree dio <b>1.3x</b> para <code>SELECT *</code> (exp 2) y <b>4.6x / 2.9x</b>
+      para el reporte agregado (exp 3-4). El índice correcto surge de <b>leer la consulta</b>: qué
+      columnas filtra, cuáles selecciona y qué fracción de la tabla devuelve (<b>selectividad</b>).
+      Elegir índices <b>después de leer el plan</b>, nunca "por si acaso".
+    </p>
+    <div class="cmp-grid">
+      <div class="card">
+        <h3>La misma consulta decide el índice</h3>
+        <ul class="req-list">
+          <li><b>SELECT * (exp 2)</b> → muy poco que ganar con un índice simple: el <code>SELECT *</code> obliga a volver al heap · <b>1.3x</b>.</li>
+          <li><b>Reporte agregado (exp 3)</b> → si el índice cubre el WHERE + SELECT, Index Only Scan · <b>4.6x</b>.</li>
+          <li><b>Solo columnas del índice (exp 4)</b> → Index Only Scan puro · <b>2.9x</b>.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>El flujo correcto</h3>
+        <div class="step-flow">
+          <span class="step">1 · lea la consulta</span><span class="arrow">→</span>
+          <span class="step">2 · ejecute EXPLAIN ANALYZE</span><span class="arrow">→</span>
+          <span class="step win">3 · decidí el índice</span>
+        </div>
+        <p class="lede" style="margin-top:10px; margin-bottom:0">
+          Nunca al revés. El índice no se elige "por si acaso": se elige <b>por la consulta que
+          realmente corre</b>.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 08 · LOS 6 AXIOMAS DEL RENDIMIENTO ================= -->
+<section id="axiomas">
+  <div class="wrap">
+    <h2><span class="num">08</span> Los 6 axiomas del rendimiento</h2>
+    <p class="lede">
+      Estos son los principios que guían todo el laboratorio. Cada experimento los pone a prueba con
+      datos medidos — y algunos (como el Axioma 3) revelan sus matices cuando la selectividad es baja.
+    </p>
+    <div class="axiom-grid">
+      <div class="axiom">
+        <span class="ax-num">01</span>
+        <h3>Mide antes de optimizar</h3>
+        <p class="ax-quote">"Nunca optimices una consulta sin ver su plan de ejecución primero."</p>
+        <p class="ax-body">
+          <code>EXPLAIN ANALYZE</code> es el punto de partida, no el final. El plan te dice
+          <b>dónde</b> se gasta el tiempo: scan, filtro, sort, join. Las estimaciones pueden estar
+          desactualizadas si no se ejecuta <code>ANALYZE</code> tras cargar datos.
+        </p>
+        <div class="ax-rule"><b>Regla:</b> si no mediste, no optimizaste — solo adivinaste.</div>
+      </div>
+      <div class="axiom">
+        <span class="ax-num">02</span>
+        <h3>El plan de ejecución es la verdad</h3>
+        <p class="ax-quote">"No confíes en tu intuición sobre cómo PostgreSQL ejecuta una consulta — confía en el plan."</p>
+        <p class="ax-body">
+          PostgreSQL elige el plan según <b>estadísticas y costos estimados</b>. A veces elige mal
+          (estadísticas viejas, datos sesgados). <code>EXPLAIN ANALYZE</code> ejecuta la consulta y
+          muestra el plan <b>real</b> ejecutado.
+        </p>
+        <div class="ax-rule"><b>Regla:</b> el plan es tu brújula — léelo antes de decidir cualquier cambio.</div>
+      </div>
+      <div class="axiom">
+        <span class="ax-num">03</span>
+        <h3>Los índices son inversión, no gasto</h3>
+        <p class="ax-quote">"Un índice bien elegido puede transformar una consulta de segundos a milisegundos."</p>
+        <p class="ax-body">
+          <b>Sin índice</b> = sequential scan (O(n)). <b>Con B-tree</b> = index scan (O(log n)). Pero
+          cada índice paga costo de escritura (INSERT/UPDATE/DELETE más lento) y depende de la
+          <b>selectividad</b> del filtro — lo vimos en vivo en el Exp 2 (1.3x).
+        </p>
+        <div class="ax-rule"><b>Regla:</b> indexe lo que consulta, no todo lo que tiene.</div>
+      </div>
+      <div class="axiom">
+        <span class="ax-num">04</span>
+        <h3>El tamaño de los datos importa</h3>
+        <p class="ax-quote">"Lo que funciona con 100k filas puede ser inaceptable con 10M filas."</p>
+        <p class="ax-body">
+          El sequential scan crece <b>linealmente</b> con la tabla; el index scan crece
+          <b>logarítmicamente</b> (prácticamente constante). La prueba con 100k filas no representa al
+          sistema real si en producción hay 10M.
+        </p>
+        <div class="ax-rule"><b>Regla:</b> pruebe con el tamaño que espera en producción, no con el que tiene ahora.</div>
+      </div>
+      <div class="axiom">
+        <span class="ax-num">05</span>
+        <h3>Repetibilidad &gt; casualidad</h3>
+        <p class="ax-quote">"Una medición aislada no vale nada — la ciencia requiere repetición."</p>
+        <p class="ax-body">
+          El cache del SO y de PostgreSQL puede confundir la medición. La primera corrida suele ser la
+          más lenta (cache frío) — descartala. Este lab repite cada experimento y reporta rangos
+          (p. ej. 4778.97 – 5936.61 ms).
+        </p>
+        <div class="ax-rule"><b>Regla:</b> reporte rangos, no puntos sueltos; incluya desviación si es posible.</div>
+      </div>
+      <div class="axiom">
+        <span class="ax-num">06</span>
+        <h3>El índice correcto depende del caso de uso</h3>
+        <p class="ax-quote">"No existe el índice perfecto universal — existe el índice correcto para TU consulta."</p>
+        <p class="ax-body">
+          <b>B-tree</b> para rangos/equality · <b>compuesto</b> para filtros múltiples ·
+          <b>cubriente</b> para solo-lectura (index-only scan). Lo vemos en vivo en los Exp 3 y 4 — y en
+          el caso B, que fue 0.8x más lento.
+        </p>
+        <div class="ax-rule"><b>Regla:</b> elija el índice según el patrón de consulta, no "por si acaso".</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 09 · CONCLUSIONES ================= -->
+<section id="conclusiones">
+  <div class="wrap">
+    <h2><span class="num">09</span> Conclusiones</h2>
+    <p class="lede">
+      Tres preguntas que este laboratorio responde con números: <b>cuándo indexar</b>,
+      <b>qué índice elegir</b> y <b>cómo leer el plan</b>.
+    </p>
+    <div class="concl-grid">
+      <div class="card concl">
+        <h3>Cuándo indexar</h3>
+        <p>
+          <b>Mida primero</b> (Axioma 1): ejecute <code>EXPLAIN ANALYZE</code> y observe si el nodo de scan
+          es <code>Seq Scan</code> sobre una tabla grande. Indexe consultas <b>frecuentes</b> sobre
+          datos que crecen, y observe la <b>selectividad</b> del filtro: si devuelve el 10% de la tabla
+          (como <code>category</code>), el índice apenas ayuda (1.3x) — la mejora real aparece cuando
+          el filtro es selectivo o el índice <b>cubre</b> la consulta (4.6x).
+        </p>
+      </div>
+      <div class="card concl">
+        <h3>Qué índice elegir</h3>
+        <p>
+          <b>Simple</b> (<code>category</code>): equality y devuelve pocas filas.
+          <b>Compuesto</b> (<code>category, value</code>): filtros + agregación/orden — cubre el
+          <code>WHERE</code> + <code>SELECT</code> del reporte.
+          <b>Cubriente</b> (agrega <code>id</code>): responde 100% desde el índice (Index Only Scan) para
+          solo-lectura, sin volver al heap. Cada columna extra = más espacio en disco y más costo de
+          escritura.
+        </p>
+      </div>
+      <div class="card concl">
+        <h3>Cómo leer el plan</h3>
+        <p>
+          Lea <b>de adentro hacia afuera</b> (el nodo de scan primero). Compare <b>estimado vs real</b>
+          (<code>cost=</code>, <code>rows=</code> vs <code>actual time</code>, <code>rows=</code>); si
+          difieren mucho, ejecute <code>ANALYZE</code>. Observe <code>Rows Removed by Filter</code>: alto =
+          se está descartando muchísimo. <b>Index Cond</b> verde = el índice resuelve el filtro.
+          <code>Execution Time</code> y <code>actual time</code> del nodo de scan = dónde se va el tiempo.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 10 · GLOSARIO ================= -->
+<section id="glosario">
+  <div class="wrap">
+    <h2><span class="num">10</span> Glosario</h2>
+    <p class="lede">
+      Los términos que usa este laboratorio, en una tabla: qué son y dónde aparecen en un plan.
+    </p>
+    <div class="card">
+      <table class="keys">
+        <thead><tr><th>Término</th><th>Definición</th><th>Cómo verlo en el plan</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="k">EXPLAIN ANALYZE</td>
+            <td>Ejecuta la consulta de verdad y muestra el <b>plan real</b>: métodos de acceso, filas reales y tiempos por nodo. Sin <code>ANALYZE</code> solo estima, no ejecuta.</td>
+            <td><code>actual time</code> · <code>Execution Time</code></td>
+          </tr>
+          <tr>
+            <td class="k">Sequential Scan (Seq Scan)</td>
+            <td>Lee <b>toda la tabla</b> fila por fila en orden físico (<b>O(n)</b>). Se elige cuando no hay índice útil o se va a devolver gran parte de la tabla.</td>
+            <td><span class="tag bad">Rows Removed by Filter</span> alto</td>
+          </tr>
+          <tr>
+            <td class="k">Index Scan</td>
+            <td>Usa un <b>B-tree</b> para localizar las filas que matchean y va al <b>heap</b> a buscarlas (<b>O(log n)</b> + I/O selectivo).</td>
+            <td><code>Index Cond</code></td>
+          </tr>
+          <tr>
+            <td class="k">Index Only Scan</td>
+            <td>El índice contiene <b>todas</b> las columnas del WHERE + SELECT: responde <b>sin volver a la tabla</b> (exp 3 y 4).</td>
+            <td><span class="tag good">Heap Fetches</span> bajo</td>
+          </tr>
+          <tr>
+            <td class="k">Bitmap Scan</td>
+            <td>Dos nodos: <b>Bitmap Index Scan</b> construye un mapa de bits de páginas y <b>Bitmap Heap Scan</b> lee del heap solo esas páginas. Ideal cuando el filtro devuelve muchas filas.</td>
+            <td><code>Bitmap Index Scan</code> + <code>Index Recheck</code></td>
+          </tr>
+          <tr>
+            <td class="k">Selectividad</td>
+            <td>Qué fracción de la tabla devuelve el filtro (<b>1M/10M = 10%</b>). <b>Baja selectividad</b> = devuelve mucho → el índice simple ayuda poco (1.3x).</td>
+            <td><code>rows=</code> vs total</td>
+          </tr>
+          <tr>
+            <td class="k">Cardinalidad (rows=)</td>
+            <td>Filas <b>estimadas</b> por el planificador, basadas en las estadísticas. Si difieren mucho de las reales, ejecute ANALYZE.</td>
+            <td><code>rows=1004684</code> vs <code>rows=1000000</code></td>
+          </tr>
+          <tr>
+            <td class="k">ANALYZE</td>
+            <td>Actualiza las <b>estadísticas del planificador</b>. <b>Obligatorio</b> después de cargar datos o crear índices.</td>
+            <td><code>ANALYZE large_table;</code></td>
+          </tr>
+          <tr>
+            <td class="k">Costo estimado (cost=)</td>
+            <td>Unidad <b>abstracta</b> del planificador (mezcla de I/O y CPU) para comparar planes. <b>No es tiempo</b>.</td>
+            <td><code>cost=0.00..211385.14</code></td>
+          </tr>
+          <tr>
+            <td class="k">Filas estimadas vs reales</td>
+            <td>La estimación (<code>rows=</code>) contra lo que realmente pasó (<code>actual rows=</code>). Diferencias grandes = estadísticas viejas.</td>
+            <td><code>1004684</code> est. vs <code>1000000</code> real</td>
+          </tr>
+          <tr>
+            <td class="k">Rows Removed by Filter</td>
+            <td>Filas <b>leídas y descartadas</b> por el filtro en un scan. Alto = la consulta paga por leer filas que no devuelve.</td>
+            <td><code>Rows Removed by Filter: 9000000</code></td>
+          </tr>
+          <tr>
+            <td class="k">Heap Fetches</td>
+            <td>Visitas al heap desde un <b>Index Only Scan</b> (filas no visibles). Con <code>VACUUM</code> al día tiende a 0.</td>
+            <td><code>Heap Fetches: 71010</code></td>
+          </tr>
+          <tr>
+            <td class="k">Index Recheck</td>
+            <td>Re-verificación del filtro al leer el heap (bitmaps <b>lossy</b>). Trabajo extra tras el índice.</td>
+            <td><code>Rows Removed by Index Recheck: 3440885</code></td>
+          </tr>
+          <tr>
+            <td class="k">Covering index (cubriente)</td>
+            <td>Índice que incluye las columnas del <b>SELECT</b> además de las del WHERE → habilita el <b>Index Only Scan</b>.</td>
+            <td><code>CREATE INDEX … ON large_table(category, value, id)</code></td>
+          </tr>
+          <tr>
+            <td class="k">B-tree</td>
+            <td>Árbol balanceado, el índice <b>por defecto</b> de PostgreSQL. Ideal para equality y rangos.</td>
+            <td><code>CREATE INDEX … USING btree</code></td>
+          </tr>
+          <tr>
+            <td class="k">O(n) vs O(log n)</td>
+            <td>Cómo crece el costo con el tamaño de la tabla: el sequential scan lee <b>todo</b> (lineal), el index scan salta niveles (logarítmico, casi constante).</td>
+            <td>10M filas: ~5.5s vs ~400ms</td>
+          </tr>
+          <tr>
+            <td class="k">Planning Time vs Execution Time</td>
+            <td>Cuánto tardó el planificador en <b>elegir el plan</b> vs cuánto tardó la consulta en <b>ejecutarse</b>. El tiempo de verdad se va en el segundo.</td>
+            <td><code>Planning Time: 2.154 ms</code> · <code>Execution Time: 5037.520 ms</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <p style="margin:0 0 8px">
+      Para hacer pruebas reales con un <b>experimento ya hecho para visualizar</b>, puede <b>descargar
+      este repositorio</b> y seguir los pasos del <b>README</b> para conocer cómo manipularlo.
+    </p>
+    <p style="margin:0">
+      <a href="https://github.com/JulioN02/JDEV-TOOL" target="_blank" rel="noopener" style="color:var(--accent-2)">https://github.com/JulioN02/JDEV-TOOL</a>
+      &nbsp;·&nbsp; ruta: <code>laboratorios-ingenieria/lab-03-query-performance</code>
+    </p>
+  </div>
+</footer>
+<script src="app.js"></script>
+</body>
+</html>
