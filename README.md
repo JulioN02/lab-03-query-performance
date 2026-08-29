@@ -4,6 +4,7 @@
 
 > Hands-on lab: un experimento, no un producto. Laboratorio que demuestra con datos reales cómo PostgreSQL ejecuta una consulta sin índice y cómo cambia el plan al agregar distintos tipos de índice, midiendo la mejora con `EXPLAIN ANALYZE`.
 > **Estado**: ✅ Completado — implementado, medido y verificado (4 experimentos + 4/4 tests + typecheck limpio).
+> **Repositorio**: [github.com/JulioN02/lab-03-query-performance](https://github.com/JulioN02/lab-03-query-performance)
 
 ---
 
