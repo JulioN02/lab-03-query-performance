@@ -104,7 +104,7 @@ const simRunners = {
     btn.disabled = true;
     setPhase(scope, "sql");
 
-    setTxt(host, "▶ La consulta se lanza a ciegas — sin EXPLAIN ANALYZE no hay plan a la vista. PostgreSQL va a barrer <b>TODA la tabla</b>…");
+    setTxt(host, "▶ La consulta se lanza a ciegas — sin EXPLAIN ANALYZE no hay plan a la vista. PostgreSQL va a recorrer <b>TODA la tabla</b>…");
     await sleep(450);
     for (let i = 0; i < 10; i++) {
       setBlock(host, i, "read");
@@ -123,11 +123,11 @@ const simRunners = {
     setStat(host, ".sim-removed", "9,000,000");
     setStat(host, ".sim-rows", "1,000,000");
     setStat(host, ".sim-time", "≈ 5.5 s");
-    setTxt(host, "Resultado: <b>10.000.000</b> leídas · <b>9.000.000</b> descartadas · <b>1.000.000</b> devueltas — en <b>≈ 5.5 s</b>, y nadie vio por qué.");
+    setTxt(host, "Resultado: <b>10.000.000</b> leídas · <b>9.000.000</b> descartadas · <b>1.000.000</b> devueltas — en <b>≈ 5.5 s</b>, sin que nadie vea por qué.");
     verdict(
       host,
       "bad",
-      "❌ SIN VISIBILIDAD — la consulta lee <b>10M</b> filas y solo devuelve <b>1M</b><span class='sub'>Sin EXPLAIN ANALYZE nadie ve el plan: PostgreSQL leyó las 10.000.000 de filas una por una (Rows Removed by Filter: 9000000) y tardó ~5.5 s. La única señal fue la queja del usuario: «el sistema anda lento».</span>"
+      "❌ SIN VISIBILIDAD — la consulta lee <b>10M</b> filas y devuelve <b>1M</b><span class='sub'>Sin EXPLAIN ANALYZE nadie ve el plan: PostgreSQL leyó las 10.000.000 de filas una por una (Rows Removed by Filter: 9000000) y tardó ~5.5 s. La única señal fue la queja del usuario: «el sistema está lento».</span>"
     );
     btn.disabled = false;
   },
@@ -163,11 +163,11 @@ const simRunners = {
     for (let i = 0; i < 10; i++) setBlock(host, i, i === 5 ? "hit" : "miss");
 
     setPlan(host, 4);
-    setTxt(host, "<b>Planning Time: 2.154 ms</b> — el planificador tardó poquísimo en decidir el plan…");
+    setTxt(host, "<b>Planning Time: 2.154 ms</b> — el planificador tardó muy poco en elegir el plan…");
     await sleep(450);
 
     setPlan(host, 5);
-    setTxt(host, "<b>Execution Time: 5037.520 ms</b> — acá se va el tiempo: el escaneo de la tabla.");
+    setTxt(host, "<b>Execution Time: 5037.520 ms</b> — aquí se va el tiempo: el escaneo de la tabla.");
     await sleep(600);
 
     setStat(host, ".sim-read", "10,000,000");
@@ -218,11 +218,11 @@ const simRunners = {
     for (let i = 0; i < 10; i++) {
       if (i === 4) {
         setBlock(host, i, "hit");
-        setTxt(host, "Bitmap Heap Scan: leyendo la página que matchea (~1M filas)…");
+        setTxt(host, "Bitmap Heap Scan: leyendo la página que coincide (~1M filas)…");
         await sleep(380);
       } else {
         setBlock(host, i, "");
-        setTxt(host, `Página ${i + 1}: no matchea → <b>no se lee</b>.`);
+        setTxt(host, `Página ${i + 1}: no coincide → <b>no se lee</b>.`);
         await sleep(60);
       }
     }

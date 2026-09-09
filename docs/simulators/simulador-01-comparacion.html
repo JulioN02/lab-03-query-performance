@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<!--
+  LAB-03 · Query Performance en PostgreSQL — Simulador comparativo de estrategias de indexación
+  Compara las 3 soluciones al problema (B-tree simple · compuesto · cubriente) contra el
+  punto de partida (sin índice = Seq Scan), ejecutando la MISMA consulta de reporte.
+  Muestra scan resultante, tiempo medido, speedup y una barra comparativa animada.
+  Standalone: CSS/JS inline, sin dependencias, sin red, sin persistencia. Español neutro.
+  Números = evidencia real del laboratorio (exp 04 · covering, tabla 10M filas).
+-->
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>LAB-03 · Índices en PostgreSQL — Comparador de estrategias</title>
+<style>
+  :root {
+    --bg:#0d1117; --card:#161b22; --card-2:#1c2330;
+    --border:#30363d; --border-soft:#21262d;
+    --text:#e6edf3; --text-dim:#9da7b3; --text-faint:#6e7681;
+    --green:#3fb950; --green-dim:#2ea043;
+    --red:#f85149; --red-dim:#da3633;
+    --yellow:#d29922; --blue:#58a6ff; --violet:#a371f7;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--text); font-family:var(--mono); line-height:1.5; -webkit-font-smoothing:antialiased; }
+  .wrap { max-width:880px; margin:0 auto; padding:0 20px; }
+  header { border-bottom:1px solid var(--border-soft); padding:26px 0 20px; }
+  h1 { font-size:22px; font-weight:800; letter-spacing:-.02em; margin-top:4px; }
+  h1 .accent { color:var(--violet); }
+  .sub { color:var(--text-dim); margin-top:8px; font-size:13px; }
+  .sub code, .desc code { background:var(--card-2); border:1px solid var(--border-soft); border-radius:4px; padding:1px 5px; font-size:.92em; color:var(--blue); }
+  .query { background:var(--card-2); border:1px solid var(--border); border-radius:8px; padding:12px 14px; margin-top:16px; font-size:12.5px; color:var(--text-dim); }
+  .query .v { color:var(--violet); font-weight:700; }
+  .query .k { color:var(--blue); }
+
+  .stage { margin-top:20px; }
+  .cards { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-top:14px; }
+  @media (max-width:720px){ .cards { grid-template-columns:1fr 1fr; } }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:14px; display:flex; flex-direction:column; gap:8px; transition:border-color .2s, background .2s, transform .2s; }
+  .card .c-tag { font-size:10px; text-transform:uppercase; letter-spacing:.08em; color:var(--text-faint); }
+  .card .c-name { font-size:13px; font-weight:800; }
+  .card .c-ddl { font-size:10px; color:var(--text-faint); font-family:var(--mono); word-break:break-all; }
+  .card .c-ddl b { color:var(--text-dim); font-weight:600; }
+  .card .c-node { font-size:12px; color:var(--text-dim); margin-top:2px; }
+  .card .c-time { font-size:20px; font-weight:800; margin-top:2px; }
+  .card .c-badge { font-size:10.5px; font-weight:700; padding:3px 8px; border-radius:999px; align-self:flex-start; }
+  .card.idle { opacity:.6; }
+  .card.running { border-color:var(--blue); background:rgba(88,166,255,.08); transform:translateY(-2px); }
+  .card.bad    { border-color:var(--red-dim); }
+  .card.warn   { border-color:var(--yellow); }
+  .card.good   { border-color:var(--green-dim); }
+  .card.info   { border-color:var(--blue); }
+  .card .c-time.bad { color:var(--red); }
+  .card .c-time.warn { color:var(--yellow); }
+  .card .c-time.good { color:var(--green); }
+  .card .c-time.info { color:var(--blue); }
+  .c-badge.bad  { color:var(--red);   background:rgba(248,81,73,.12); }
+  .c-badge.warn { color:var(--yellow); background:rgba(210,153,34,.12); }
+  .c-badge.good { color:var(--green); background:rgba(63,185,80,.12); }
+  .c-badge.info { color:var(--blue);  background:rgba(88,166,255,.12); }
+
+  .bars { margin-top:22px; display:grid; gap:8px; }
+  .bar-row { display:grid; grid-template-columns:170px 1fr 110px; gap:12px; align-items:center; }
+  @media (max-width:720px){ .bar-row { grid-template-columns:110px 1fr 70px; } }
+  .bar-label { font-size:11px; color:var(--text-dim); text-align:right; }
+  .bar-track { height:18px; background:var(--card-2); border:1px solid var(--border-soft); border-radius:6px; overflow:hidden; }
+  .bar-fill { height:100%; width:0; border-radius:6px; transition:width .8s cubic-bezier(.22,.61,.36,1); }
+  .bar-fill.bad  { background:linear-gradient(90deg, rgba(248,81,73,.55), var(--red)); }
+  .bar-fill.warn { background:linear-gradient(90deg, rgba(210,153,34,.55), var(--yellow)); }
+  .bar-fill.good { background:linear-gradient(90deg, rgba(63,185,80,.55), var(--green)); }
+  .bar-fill.info { background:linear-gradient(90deg, rgba(88,166,255,.55), var(--blue)); }
+  .bar-val { font-size:11px; color:var(--text); }
+
+  .sim-status { font-size:12.5px; min-height:42px; color:var(--text-dim); margin-top:18px; }
+  .btn-play { font-size:13px; font-weight:700; cursor:pointer; background:var(--green-dim); color:#fff; border:none; border-radius:8px; padding:10px 20px; transition:filter .15s; margin-top:6px; }
+  .btn-play:hover { filter:brightness(1.12); }
+  .btn-play:disabled { opacity:.5; cursor:not-allowed; }
+
+  .verdict { font-size:13px; padding:12px 16px; border-radius:10px; margin-top:16px; line-height:1.55; }
+  .verdict.good { background:rgba(63,185,80,.1); color:var(--green); border:1px solid rgba(63,185,80,.3); }
+  .verdict .sub { display:block; font-weight:400; color:var(--text-dim); margin-top:4px; font-size:12px; }
+
+  .takeaway { margin-top:16px; font-size:12px; color:var(--text-dim); line-height:1.6; }
+  .takeaway b { color:var(--text); }
+  footer { color:var(--text-faint); font-size:11px; padding:20px 0 40px; margin-top:18px; border-top:1px solid var(--border-soft); }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <h1>📊 LAB-03 · ¿Qué índice usar? <span class="accent">Comparador de estrategias</span></h1>
+    <p class="sub">
+      La <b>misma consulta de reporte</b> ejecutada contra <b>4 configuraciones</b>: sin índice (el
+      punto de partida), y las 3 soluciones — <b>B-tree simple</b>, <b>compuesto</b> y <b>cubriente</b>.
+      Compara scan resultante, tiempo medido y mejora.
+    </p>
+    <div class="query">
+      <span class="k">SELECT</span> category, <span class="v">AVG</span>(value) as avg_value, <span class="v">COUNT</span>(*) as count<br>
+      <span class="k">FROM</span> large_table <span class="k">WHERE</span> category = 'Electronics' <span class="v">GROUP BY</span> category;
+      <span style="color:var(--text-faint)">— tabla: 10.000.000 filas · filtro: 10% (baja selectividad)</span>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+  <section class="stage">
+    <div class="cards" id="cards">
+      <div class="card idle" data-case="A">
+        <div class="c-tag">A · punto de partida</div>
+        <div class="c-name">Sin índice</div>
+        <div class="c-ddl">— (no hay índice en category)</div>
+        <div class="c-node" id="nodeA">Seq Scan</div>
+        <div class="c-time" id="timeA">—</div>
+        <div class="c-badge" id="badgeA">—</div>
+      </div>
+      <div class="card idle" data-case="B">
+        <div class="c-tag">B · solución 1</div>
+        <div class="c-name">B-tree simple</div>
+        <div class="c-ddl">CREATE INDEX ON <b>large_table(category)</b></div>
+        <div class="c-node" id="nodeB">Bitmap Heap Scan</div>
+        <div class="c-time" id="timeB">—</div>
+        <div class="c-badge" id="badgeB">—</div>
+      </div>
+      <div class="card idle" data-case="C">
+        <div class="c-tag">C · solución 2</div>
+        <div class="c-name">Compuesto</div>
+        <div class="c-ddl">CREATE INDEX ON <b>large_table(category, value)</b></div>
+        <div class="c-node" id="nodeC">Index Only Scan</div>
+        <div class="c-time" id="timeC">—</div>
+        <div class="c-badge" id="badgeC">—</div>
+      </div>
+      <div class="card idle" data-case="D">
+        <div class="c-tag">D · solución 3</div>
+        <div class="c-name">Cubriente</div>
+        <div class="c-ddl">CREATE INDEX ON <b>large_table(category, value, id)</b></div>
+        <div class="c-node" id="nodeD">Index Only Scan</div>
+        <div class="c-time" id="timeD">—</div>
+        <div class="c-badge" id="badgeD">—</div>
+      </div>
+    </div>
+
+    <div class="bars" id="bars">
+      <div class="bar-row"><div class="bar-label">A · sin índice</div><div class="bar-track"><div class="bar-fill bad" data-case="A"></div></div><div class="bar-val" id="barA">—</div></div>
+      <div class="bar-row"><div class="bar-label">B · B-tree simple</div><div class="bar-track"><div class="bar-fill warn" data-case="B"></div></div><div class="bar-val" id="barB">—</div></div>
+      <div class="bar-row"><div class="bar-label">C · compuesto</div><div class="bar-track"><div class="bar-fill good" data-case="C"></div></div><div class="bar-val" id="barC">—</div></div>
+      <div class="bar-row"><div class="bar-label">D · cubriente</div><div class="bar-track"><div class="bar-fill info" data-case="D"></div></div><div class="bar-val" id="barD">—</div></div>
+    </div>
+
+    <div class="sim-status" id="status">Listo. Presiona <b>▶ Correr comparación</b> para ejecutar la misma consulta en las 4 configuraciones.</div>
+    <button class="btn-play" id="run">▶ Correr comparación</button>
+    <div class="verdict" id="verdict" hidden></div>
+
+    <div class="takeaway">
+      <b>Qué demuestra:</b> la misma consulta produce <b>planes distintos</b> según el índice. El B-tree
+      simple casi no ayuda (<b>baja selectividad</b>: el filtro devuelve el 10% de la tabla) e incluso
+      puede ser <b>más lento que no tener nada</b>. El <b>compuesto</b> cubre el WHERE + SELECT y logra
+      un <b>Index Only Scan</b>. El <b>cubriente</b> responde 100% desde el índice, sin volver al heap.
+      El índice correcto surge de leer la consulta — no de agregar índices "por si acaso".
+    </div>
+  </section>
+  <footer>LAB-03 · Rendimiento de Consultas en PostgreSQL — evidencia real: exp 04 (covering) sobre 10M filas.</footer>
+</div>
+
+<script>
+/* Comparador de estrategias de indexación — vanilla ES, solo estado en memoria.
+   Números = evidencia real del laboratorio (exp 04 · covering):
+     A · sin índice  → Parallel Seq Scan     → 2531.10 ms (baseline)
+     B · simple      → Bitmap Heap Scan      → 3236.70 ms (0.8x · ¡más lento que nada!)
+     C · compuesto   → Parallel Index Only   →  866.52 ms (2.9x)
+     D · cubriente   → Index Only Scan puro  → responde sin heap
+*/
+const CASES = [
+  {
+    id: "A", cls: "bad",
+    node: "Parallel Seq Scan", time: "2531.10 ms", badge: "1.0x · baseline", pct: 100,
+    msg: "A · sin índice → <b>Parallel Seq Scan</b>: lee la tabla completa (10M filas), descarta 9M → <b>2531.10 ms</b>."
+  },
+  {
+    id: "B", cls: "warn",
+    node: "Bitmap Heap Scan", time: "3236.70 ms", badge: "0.8x · ¡más lento!", pct: 128,
+    msg: "B · B-tree simple → <b>Bitmap Heap Scan</b>: construye el bitmap y aun así vuelve al heap por value → <b>3236.70 ms (0.8x)</b>. ¡Peor que no tener nada!"
+  },
+  {
+    id: "C", cls: "good",
+    node: "Index Only Scan", time: "866.52 ms", badge: "2.9x", pct: 34,
+    msg: "C · compuesto (category, value) → <b>Index Only Scan</b>: el índice cubre WHERE + SELECT → <b>866.52 ms (2.9x)</b>."
+  },
+  {
+    id: "D", cls: "info",
+    node: "Index Only Scan · sin heap", time: "sin heap", badge: "100% índice", pct: 4,
+    msg: "D · cubriente (category, value, id) → <b>Index Only Scan puro</b>: responde 100% desde el índice, <b>sin acceder a la tabla</b>."
+  },
+];
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const cards = {};
+const fills = {};
+const barVals = {};
+CASES.forEach((c) => {
+  cards[c.id] = document.querySelector(`.card[data-case="${c.id}"]`);
+  fills[c.id] = document.querySelector(`.bar-fill[data-case="${c.id}"]`);
+  barVals[c.id] = document.getElementById("bar" + c.id);
+});
+
+const runBtn = document.getElementById("run");
+const statusEl = document.getElementById("status");
+const verdictEl = document.getElementById("verdict");
+
+let running = false;
+runBtn.addEventListener("click", async () => {
+  if (running) return;
+  running = true;
+  runBtn.disabled = true;
+  verdictEl.hidden = true;
+
+  /* reset */
+  CASES.forEach((c) => {
+    const card = cards[c.id];
+    card.className = "card idle";
+    document.getElementById("node" + c.id).textContent = c.node;
+    document.getElementById("time" + c.id).textContent = "—";
+    document.getElementById("time" + c.id).className = "c-time";
+    document.getElementById("badge" + c.id).textContent = "—";
+    document.getElementById("badge" + c.id).className = "c-badge";
+    fills[c.id].style.width = "0%";
+    barVals[c.id].textContent = "—";
+  });
+
+  for (const c of CASES) {
+    const card = cards[c.id];
+    statusEl.innerHTML = c.msg;
+    card.classList.remove("idle");
+    card.classList.add("running");
+    await sleep(900);
+
+    card.classList.remove("running");
+    card.classList.add(c.cls);
+    const timeEl = document.getElementById("time" + c.id);
+    const badgeEl = document.getElementById("badge" + c.id);
+    timeEl.textContent = c.time;
+    timeEl.className = "c-time " + c.cls;
+    badgeEl.textContent = c.badge;
+    badgeEl.className = "c-badge " + c.cls;
+    fills[c.id].style.width = c.pct + "%";
+    barVals[c.id].textContent = c.time;
+    await sleep(500);
+  }
+
+  statusEl.innerHTML = "Comparación completa — ordena por tiempo: <b>D (cubriente) &lt; C (compuesto) &lt; A (sin índice) &lt; B (simple)</b>.";
+  verdictEl.className = "verdict good";
+  verdictEl.innerHTML =
+    "✅ EL ÍNDICE CORRECTO DEPENDE DE LA CONSULTA — compuesto <b>2.9x</b> · cubriente responde <b>sin heap</b> · el simple salió <b>0.8x (más lento)</b>" +
+    "<span class='sub'>El B-tree simple pagó construir el bitmap y aun así volvió al heap por value (baja selectividad: 10%). El compuesto cubre WHERE + SELECT → Index Only Scan. El cubriente responde 100% desde el índice. No es «más índices = más rápido»: es el índice correcto para la consulta.</span>";
+  verdictEl.hidden = false;
+
+  running = false;
+  runBtn.disabled = false;
+});
+</script>
+</body>
+</html>

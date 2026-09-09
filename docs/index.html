@@ -12,9 +12,9 @@
     <span class="tag">● Laboratorio de Ingeniería · Temporada 1</span>
     <h1>LAB-03 · <span class="accent">Rendimiento de Consultas</span> en PostgreSQL</h1>
     <p class="sub">
-      Una tabla de reportes crece: 100 mil, <b>1 millón</b> y/o <b>10 millones</b> de filas. La
-      aplicación sigue funcionando normal, pero de pronto una consulta de reporte que antes tomaba
-      milisegundos ahora tarda <b>segundos</b>. Este dashboard narra el laboratorio completo: el
+      Una tabla de reportes crece: 100 mil, <b>1 millón</b> o incluso <b>10 millones</b> de filas. La
+      aplicación sigue funcionando, pero una consulta de reporte que antes respondía en milisegundos
+      ahora tarda <b>segundos</b>. Este dashboard narra el laboratorio completo: el
       <b>problema</b> (la tabla creció y el plan de ejecución cambió), la <b>herramienta</b>
       (<b>EXPLAIN ANALYZE</b> como brújula), el <b>índice B-tree</b> y su lección de
       <b>selectividad</b>, el <b>compuesto</b> para reportes GROUP BY, el <b>cubriente</b> que responde
@@ -36,10 +36,10 @@
   <div class="wrap">
     <h2><span class="num">01</span> El problema: la tabla creció y la consulta se volvió lenta</h2>
     <p class="lede">
-      Una tabla de reportes crece: 100 mil, 1 millón y/o 10 millones de filas. La aplicación sigue
-      funcionando normal, pero de pronto una consulta de reporte que antes tomaba
-      <b>milisegundos</b> ahora tarda <b>segundos</b>. El usuario dice <i>"el sistema anda lento"</i>.
-      ¿Es la red? ¿La aplicación? ¿La base de datos? <b>¿Qué consulta es la culpable?</b>
+      Una tabla de reportes crece: 100 mil, 1 millón o incluso 10 millones de filas. La aplicación
+      sigue funcionando, pero una consulta de reporte que antes respondía en <b>milisegundos</b>
+      ahora tarda <b>segundos</b>. Para el usuario el diagnóstico es simple: <i>"el sistema está
+      lento"</i>. ¿Es la red? ¿La aplicación? ¿La base de datos? <b>¿Qué consulta es la culpable?</b>
     </p>
 
     <div class="growth">
@@ -49,10 +49,10 @@
     </div>
 
     <div class="callout">
-      La intuición típica sería: <i>"hay que optimizar el código — cambiar el <code>SELECT *</code>,
-      agregar un <code>LIMIT</code>…"</i> pero el cuello de botella está <b>casi siempre en el plan de
-      ejecución</b>, ya sea porque cambió o nunca fue óptimo. El error más común es revisar el código
-      <b>sin entender primero qué se está haciendo a nivel de consulta</b>.
+      La reacción habitual es modificar el código: cambiar el <code>SELECT *</code>, agregar un
+      <code>LIMIT</code> o buscar una optimización en la aplicación. Pero antes de cambiar una consulta
+      es necesario entender <b>cómo PostgreSQL decidió ejecutarla</b>: el cuello de botella está
+      <b>casi siempre en el plan de ejecución</b>, ya sea porque cambió o nunca fue óptimo.
     </div>
 
     <div class="sol-code" id="code-problema" style="margin-top:20px">
@@ -73,7 +73,7 @@
         <div class="stat"><div class="k">Tiempo</div><div class="v warn sim-time">—</div></div>
       </div>
       <div class="hblk-row sim-blocks" style="margin-bottom:12px"></div>
-      <div class="sim-txt">Sin <b>EXPLAIN ANALYZE</b> no se ve ningún plan: la consulta se ejecuta a ciegas. Presioná <b>▶ Correr simulación</b> para ver qué pasa adentro.</div>
+      <div class="sim-txt">Sin <b>EXPLAIN ANALYZE</b> no se ve ningún plan: la consulta se ejecuta a ciegas. Presiona <b>▶ Correr simulación</b> para ver qué pasa adentro.</div>
       <button class="btn-play sim-run">▶ Correr simulación</button>
       <div class="sol-verdict" hidden></div>
     </div>
@@ -91,17 +91,17 @@
   <div class="wrap">
     <h2><span class="num">02</span> La herramienta: EXPLAIN ANALYZE</h2>
     <p class="lede">
-      Para entender el panorama se puede usar la herramienta <b>EXPLAIN ANALYZE</b>, que sirve como
-      <b>brújula</b> para identificar qué sucede: <b>ejecuta la consulta de verdad</b> y muestra el
-      plan que PostgreSQL <b>realmente</b> usó.
+      Para entender qué está ocurriendo dentro de la base de datos, podemos usar <b>EXPLAIN ANALYZE</b>
+      como una <b>brújula</b>: no solo muestra el plan que PostgreSQL considera, sino que <b>ejecuta la
+      consulta</b> y muestra el plan que <b>realmente</b> usó.
     </p>
 
     <div class="card" style="margin-bottom:18px">
       <h3>Aquí se determina — <code>scan</code> · <code>filtro</code> · <code>sort</code> · <code>join</code> · <code>agregación</code></h3>
       <ul class="req-list">
-        <li><b>Costo estimado vs tiempo real</b> — lo que el planificador <em>predijo</em> contra lo que <em>pasó</em>.</li>
+        <li><b>Costo estimado vs ejecución real</b> — lo que el planificador <em>predijo</em> contra lo que <em>pasó</em>.</li>
         <li><b>Filas leídas</b> — cuántas filas tuvo que tocar realmente para responder.</li>
-        <li><b>Filas descartadas</b> — las que leyó y tiró (el trabajo invisible de una consulta).</li>
+        <li><b>Filas descartadas</b> — las que leyó y descartó (el trabajo invisible de una consulta).</li>
         <li><b>Dónde se gasta el tiempo</b> — en qué nodo del plan se va el tiempo real.</li>
       </ul>
     </div>
@@ -121,7 +121,8 @@
       <b>EXPLAIN ANALYZE ejecuta la consulta de verdad.</b> Por eso los números de la derecha
       (<code>actual time</code>, <code>rows=</code> reales, <code>loops=</code>) son los hechos, y los
       de la izquierda (<code>cost=</code>, <code>rows=</code> estimados) son solo la estimación del
-      planificador.
+      planificador. Lo importante no es cuánto tarda la consulta, sino <b>qué trabajo</b> tuvo que
+      realizar para producir ese resultado.
     </div>
 
     <!-- ══════════ SIMULACIÓN (b): el plan anotado ══════════ -->
@@ -141,7 +142,7 @@
         <div class="pline" data-phase="5">Execution Time: <span class="p-bad">5037.520 ms</span></div>
       </div>
       <div class="hblk-row sim-blocks" style="margin-bottom:12px"></div>
-      <div class="sim-txt">El plan anotado — cada bloque es ~1M de filas. Presioná <b>▶ Correr simulación</b> para ver cómo se lee el nodo.</div>
+      <div class="sim-txt">El plan anotado — cada bloque es ~1M de filas. Presiona <b>▶ Correr simulación</b> para ver cómo se lee el nodo.</div>
       <button class="btn-play sim-run">▶ Correr simulación</button>
       <div class="sol-verdict" hidden></div>
     </div>
@@ -181,8 +182,9 @@
       Sin un índice en <code>category</code>, PostgreSQL <b>no tiene forma de saltar filas</b>: ejecuta
       un <b>sequential scan</b> y lee <b>las 10.000.000 de filas una por una</b>, descartando las que
       no coinciden. Un <code>SELECT *</code> que devuelve solo 1M de filas <b>paga por leer las otras
-      9M que descarta</b>. El tiempo de lectura crece linealmente a medida que el tamaño de la tabla
-      también (<b>O(n)</b>): 5.5 segundos y 5037.52 ms de Execution Time.
+      9M que descarta</b>. El problema no es que PostgreSQL lea datos, es <b>cuánto trabajo</b>
+      necesita realizar para encontrar lo que realmente necesita: el tiempo crece linealmente con el
+      tamaño de la tabla (<b>O(n)</b>) — 5.5 segundos y 5037.52 ms de Execution Time.
     </div>
   </div>
 </section>
@@ -192,9 +194,10 @@
   <div class="wrap">
     <h2><span class="num">03</span> Posibles soluciones al problema</h2>
     <p class="lede">
-      Si el problema es el <b>plan de ejecución</b>, la solución es <b>datalaminar lo que PostgreSQL
-      puede saltar</b>: índices. Pero no cualquier índice. Estas son las posibles soluciones, de la más
-      simple a la más sofisticada, cada una con su plan resultante y sus números medidos.
+      Si el problema es el <b>plan de ejecución</b>, la solución es que PostgreSQL haga <b>menos
+      trabajo</b> mediante índices, pero no cualquier índice: su utilidad depende de los datos, de la
+      consulta y de la cantidad de filas que cumplen el filtro. Estas son las posibles soluciones, de
+      la más simple a la más sofisticada, cada una con su plan resultante y sus números medidos.
     </p>
 
     <!-- (a) SIN ÍNDICE: SEQUENTIAL SCAN -->
@@ -202,8 +205,8 @@
       <h3><span class="sol-num k" style="display:inline-flex; margin-right:8px">(a)</span> Sin índice: Sequential Scan</h3>
       <p class="sol-desc" style="margin:0 0 10px">
         Sin índice en <code>category</code>, PostgreSQL no tiene forma de localizar las filas: lee la
-        tabla <b>de punta a punta</b>, aplica el filtro a cada fila y se queda con las que hacen
-        <b>match</b>. Es el plan de los 5037.52 ms de la sección 02 — el punto de partida de todo el problema.
+        tabla <b>fila por fila</b>, aplica el filtro a cada una y conserva solo las que cumplen la
+        condición. Es el plan de los 5037.52 ms de la sección 02 — el punto de partida de todo el problema.
       </p>
       <div class="step-flow">
         <span class="step conflict">1 · Seq Scan (10M filas)</span><span class="arrow">→</span>
@@ -220,7 +223,7 @@
           <p class="sol-desc">
             El <b>índice B-tree</b> es la estructura de índice por defecto de PostgreSQL: un árbol
             balanceado que ordena los valores de <code>category</code> y permite localizar las filas
-            que matchean <b>sin recorrer la tabla</b>. Pero elegir un índice "por si acaso" no es
+            coincidentes <b>sin recorrer la tabla</b>. Pero elegir un índice "por si acaso" no es
             gratis, y este experimento lo demuestra: la <b>misma consulta</b> antes y después de crear
             el índice, midiendo el cambio de plan. La lección incómoda es la primera: como
             <code>category</code> tiene <b>baja selectividad</b> (~1M de 10M = 10%), el tiempo pasa de
@@ -270,7 +273,7 @@
             <div class="stat"><div class="k">Mejora</div><div class="v warn sim-speedup">—</div></div>
           </div>
           <div class="hblk-row sim-blocks" style="margin-bottom:12px"></div>
-          <div class="sim-txt">Antes/después del B-tree. Presioná <b>▶ Correr simulación</b>.</div>
+          <div class="sim-txt">Antes/después del B-tree. Presiona <b>▶ Correr simulación</b>.</div>
           <button class="btn-play sim-run">▶ Correr simulación</button>
           <div class="sol-verdict" hidden></div>
         </div>
@@ -286,7 +289,7 @@
 
       <div class="insight">
         <div class="insight-tag">⚠️ La lección de la selectividad</div>
-        El índice evitó leer las 9M de filas que no matchean — pero como el filtro devuelve el
+        El índice evitó leer las 9M de filas que no coinciden — pero como el filtro devuelve el
         <b>10% de la tabla</b> (1M/10M), igual tuvo que materializar ~1M de filas (y con
         <code>SELECT *</code> hay que ir al heap por todas las columnas). Ningún índice simple
         convierte esta consulta en mágica: <b>1.3x es el dato honesto</b>.
@@ -299,13 +302,14 @@
         <div>
           <h3><span class="sol-num o">(c)</span> Índice compuesto: Reporte GROUP BY <span class="sol-tag good">✅ 4.6X · INDEX ONLY SCAN</span></h3>
           <p class="sol-desc">
-            <b>Aquí va una explicación previa general de qué se trata:</b> las consultas de reporte no
-            piden <code>SELECT *</code>: <b>agrupan</b> (<code>GROUP BY</code>), <b>agregan</b>
-            (<code>AVG</code>, <code>COUNT</code>), <b>ordenan</b>. Ahí el juego cambia: si el índice
-            contiene <b>todas las columnas que la consulta necesita</b>, PostgreSQL puede responder
-            <b>sin volver a la tabla</b> — un <b>Index Only Scan</b>. Este experimento compara el
-            reporte sin índice (1917.99 ms), con índice simple (1856.86 ms, un no-op 1.0x) y con
-            índice <b>compuesto (category, value)</b> (414.01 ms = 4.6x).
+            Las consultas de reporte no piden <code>SELECT *</code>: <b>agrupan</b>
+            (<code>GROUP BY</code>), <b>agregan</b> (<code>AVG</code>, <code>COUNT</code>) y
+            <b>ordenan</b>. Ahí el juego cambia: un <b>índice compuesto</b> reúne varias columnas en
+            una misma estructura para adaptarse a ese patrón de acceso. Si el índice contiene <b>todas
+            las columnas que la consulta necesita</b>, PostgreSQL puede responder <b>sin volver a la
+            tabla</b> — un <b>Index Only Scan</b>. Este experimento compara el reporte sin índice
+            (1917.99 ms), con índice simple (1856.86 ms, un no-op 1.0x) y con índice <b>compuesto
+            (category, value)</b> (414.01 ms = 4.6x).
           </p>
         </div>
         <div class="sol-result">medido<b>1917.99 → 1856.86 → 414.01 ms</b><span class="verdict-chip good">compuesto 4.6x</span><span class="verdict-chip warn">simple 1.0x</span></div>
@@ -348,7 +352,7 @@
             <div class="stat"><div class="k">Mejora</div><div class="v good sim-speedup">—</div></div>
           </div>
           <div class="bars sim-bars"></div>
-          <div class="sim-txt">Reporte GROUP BY: 3 escenarios. Presioná <b>▶ Correr simulación</b>.</div>
+          <div class="sim-txt">Reporte GROUP BY: 3 escenarios. Presiona <b>▶ Correr simulación</b>.</div>
           <button class="btn-play sim-run">▶ Correr simulación</button>
           <div class="sol-verdict" hidden></div>
         </div>
@@ -363,7 +367,7 @@
       <div class="sol-verdict" hidden></div>
 
       <div class="callout">
-        El <b>índice simple fue un no-op: 1.0x</b>. La lección del Axioma 6: indexe las columnas que la
+        El <b>índice simple fue un no-op: 1.0x</b>. La lección del Axioma 6: indexa las columnas que la
         consulta <b>realmente usa</b>. Para este reporte la columna correcta es
         <code>(category, value)</code> — no <code>category</code> sola, porque el <code>SELECT</code>
         pide <code>AVG(value)</code> y sin <code>value</code> en el índice hay que ir al heap a buscarlo.
@@ -376,11 +380,12 @@
         <div>
           <h3><span class="sol-num o">(d)</span> Índice cubriente: Responder sin volver a la tabla <span class="sol-tag good">✅ 2.9X · SIN HEAP</span></h3>
           <p class="sol-desc">
-            <b>Aquí va una explicación previa general de qué se trata:</b> para la misma consulta de
-            reporte, el <b>índice compuesto (category, value, id)</b> logra un <b>Index Only Scan
-            puro</b>: responde <b>sin volver a la tabla</b>. Y hay un <b>bonus anti-intuitivo</b>: el
-            <b>índice simple salió 0.8x — más lento que no tener nada</b>. La evidencia desmiente
-            <i>"más índices = más rápido"</i>.
+            Para la misma consulta de reporte, el <b>índice cubriente (category, value, id)</b> logra
+            un <b>Index Only Scan puro</b>: contiene todas las columnas que la consulta necesita y
+            responde <b>sin volver a la tabla</b>. Y hay un <b>bonus anti-intuitivo</b>: el <b>índice
+            simple salió 0.8x — más lento que no tener nada</b>. La evidencia desmiente <i>"más índices
+            = más rápido"</i>: un índice puede mejorar una consulta, no producir cambios relevantes o
+            incluso hacerla menos eficiente.
           </p>
         </div>
         <div class="sol-result">medido<b>2531.10 → 3236.70 → 866.52 ms</b><span class="verdict-chip good">compuesto 2.9x</span><span class="verdict-chip bad">simple 0.8x</span></div>
@@ -428,7 +433,7 @@
             <div class="stat"><div class="k">Cubriente</div><div class="v info sim-cover">—</div></div>
           </div>
           <div class="bars sim-bars"></div>
-          <div class="sim-txt">Reporte + SELECT de solo columnas del índice. Presioná <b>▶ Correr simulación</b>.</div>
+          <div class="sim-txt">Reporte + SELECT de solo columnas del índice. Presiona <b>▶ Correr simulación</b>.</div>
           <button class="btn-play sim-run">▶ Correr simulación</button>
           <div class="sol-verdict" hidden></div>
         </div>
@@ -528,7 +533,7 @@
           <div class="fc-badge">✅ 100% índice</div>
         </div>
       </div>
-      <div class="sim-txt">Las 4 formas de ejecutar el mismo reporte. Presioná <b>▶ Correr simulación</b>.</div>
+      <div class="sim-txt">Las 4 formas de ejecutar el mismo reporte. Presiona <b>▶ Correr simulación</b>.</div>
       <button class="btn-play sim-run">▶ Correr simulación</button>
       <div class="sol-verdict" hidden></div>
     </div>
@@ -617,7 +622,7 @@
     <h2><span class="num">06</span> ¿Por qué el índice simple fue 0.8x (más lento)?</h2>
     <p class="lede">
       El plan <code>Bitmap Heap Scan</code> construyó el bitmap (<code>Bitmap Index Scan</code>:
-      <b>399 ms</b>) y después igual tuvo que <b>volver al heap</b> por <code>value</code>, con recheck
+      <b>399 ms</b>) y después tuvo que <b>volver al heap</b> por <code>value</code>, con recheck
       de <b>~1.1M filas</b>. Pagó el costo del índice <b>y</b> el costo de la tabla. La consulta pedía
       <code>AVG(value)</code>: sin <code>value</code> en el índice, el índice <b>no cubre la
       consulta</b>.
@@ -637,9 +642,11 @@
     <h2><span class="num">07</span> Cuánto importa la consulta (y no el índice "por si acaso")</h2>
     <p class="lede">
       El mismo índice B-tree dio <b>1.3x</b> para <code>SELECT *</code> (exp 2) y <b>4.6x / 2.9x</b>
-      para el reporte agregado (exp 3-4). El índice correcto surge de <b>leer la consulta</b>: qué
-      columnas filtra, cuáles selecciona y qué fracción de la tabla devuelve (<b>selectividad</b>).
-      Elegir índices <b>después de leer el plan</b>, nunca "por si acaso".
+      para el reporte agregado (exp 3-4). La pregunta no es <i>qué índice agregar</i>, sino <b>qué
+      trabajo</b> realiza PostgreSQL y qué estructura puede reducirlo. El índice correcto surge de
+      <b>leer la consulta</b>: qué columnas filtra, cuáles selecciona y qué fracción de la tabla
+      devuelve (<b>selectividad</b>). El índice se elige <b>después de leer el plan</b>, nunca "por
+      si acaso".
     </p>
     <div class="cmp-grid">
       <div class="card">
@@ -653,9 +660,9 @@
       <div class="card">
         <h3>El flujo correcto</h3>
         <div class="step-flow">
-          <span class="step">1 · lea la consulta</span><span class="arrow">→</span>
-          <span class="step">2 · ejecute EXPLAIN ANALYZE</span><span class="arrow">→</span>
-          <span class="step win">3 · decidí el índice</span>
+          <span class="step">1 · lee la consulta</span><span class="arrow">→</span>
+          <span class="step">2 · ejecuta EXPLAIN ANALYZE</span><span class="arrow">→</span>
+          <span class="step win">3 · decide el índice</span>
         </div>
         <p class="lede" style="margin-top:10px; margin-bottom:0">
           Nunca al revés. El índice no se elige "por si acaso": se elige <b>por la consulta que
@@ -680,11 +687,13 @@
         <h3>Mide antes de optimizar</h3>
         <p class="ax-quote">"Nunca optimices una consulta sin ver su plan de ejecución primero."</p>
         <p class="ax-body">
-          <code>EXPLAIN ANALYZE</code> es el punto de partida, no el final. El plan te dice
-          <b>dónde</b> se gasta el tiempo: scan, filtro, sort, join. Las estimaciones pueden estar
-          desactualizadas si no se ejecuta <code>ANALYZE</code> tras cargar datos.
+          <code>EXPLAIN ANALYZE</code> es el punto de partida, no el final. El plan muestra
+          <b>dónde</b> se gasta el tiempo: scan, filtro, sort, join. Compara lo que el planificador
+          <em>estimó</em> frente a lo que <em>realmente pasó</em>, dónde se concentra el trabajo y
+          cuántas filas se descartaron. Las estimaciones pueden estar desactualizadas si no se
+          ejecuta <code>ANALYZE</code> tras cargar datos.
         </p>
-        <div class="ax-rule"><b>Regla:</b> si no mediste, no optimizaste — solo adivinaste.</div>
+        <div class="ax-rule"><b>Regla:</b> si no mediste el problema, no sabes qué estás optimizando.</div>
       </div>
       <div class="axiom">
         <span class="ax-num">02</span>
@@ -699,14 +708,14 @@
       </div>
       <div class="axiom">
         <span class="ax-num">03</span>
-        <h3>Los índices son inversión, no gasto</h3>
+        <h3>Un índice es una inversión</h3>
         <p class="ax-quote">"Un índice bien elegido puede transformar una consulta de segundos a milisegundos."</p>
         <p class="ax-body">
           <b>Sin índice</b> = sequential scan (O(n)). <b>Con B-tree</b> = index scan (O(log n)). Pero
           cada índice paga costo de escritura (INSERT/UPDATE/DELETE más lento) y depende de la
           <b>selectividad</b> del filtro — lo vimos en vivo en el Exp 2 (1.3x).
         </p>
-        <div class="ax-rule"><b>Regla:</b> indexe lo que consulta, no todo lo que tiene.</div>
+        <div class="ax-rule"><b>Regla:</b> no se trata de tener más índices, sino de elegir los necesarios y medir su impacto.</div>
       </div>
       <div class="axiom">
         <span class="ax-num">04</span>
@@ -717,29 +726,29 @@
           <b>logarítmicamente</b> (prácticamente constante). La prueba con 100k filas no representa al
           sistema real si en producción hay 10M.
         </p>
-        <div class="ax-rule"><b>Regla:</b> pruebe con el tamaño que espera en producción, no con el que tiene ahora.</div>
+        <div class="ax-rule"><b>Regla:</b> mide con el volumen de datos realista, no con el que tienes ahora.</div>
       </div>
       <div class="axiom">
         <span class="ax-num">05</span>
         <h3>Repetibilidad &gt; casualidad</h3>
         <p class="ax-quote">"Una medición aislada no vale nada — la ciencia requiere repetición."</p>
         <p class="ax-body">
-          El cache del SO y de PostgreSQL puede confundir la medición. La primera corrida suele ser la
-          más lenta (cache frío) — descartala. Este lab repite cada experimento y reporta rangos
-          (p. ej. 4778.97 – 5936.61 ms).
+          La caché del sistema y de PostgreSQL puede confundir la medición. La primera corrida suele
+          ser la más lenta (caché fría) — descártala. Este lab repite cada experimento y reporta
+          rangos (p. ej. 4778.97 – 5936.61 ms).
         </p>
-        <div class="ax-rule"><b>Regla:</b> reporte rangos, no puntos sueltos; incluya desviación si es posible.</div>
+        <div class="ax-rule"><b>Regla:</b> una medición muestra un resultado; varias muestran una tendencia.</div>
       </div>
       <div class="axiom">
         <span class="ax-num">06</span>
-        <h3>El índice correcto depende del caso de uso</h3>
-        <p class="ax-quote">"No existe el índice perfecto universal — existe el índice correcto para TU consulta."</p>
+        <h3>El índice correcto depende de la consulta</h3>
+        <p class="ax-quote">"No existe un índice ideal para todas las consultas — existe el índice correcto para la tuya."</p>
         <p class="ax-body">
-          <b>B-tree</b> para rangos/equality · <b>compuesto</b> para filtros múltiples ·
-          <b>cubriente</b> para solo-lectura (index-only scan). Lo vemos en vivo en los Exp 3 y 4 — y en
-          el caso B, que fue 0.8x más lento.
+          <b>B-tree</b> para equality/rangos · <b>compuesto</b> para consultas que filtran por varias
+          columnas · <b>cubriente</b> para evitar accesos adicionales a la tabla (index-only scan). Lo
+          vemos en vivo en los Exp 3 y 4 — y en el caso B, que fue 0.8x más lento.
         </p>
-        <div class="ax-rule"><b>Regla:</b> elija el índice según el patrón de consulta, no "por si acaso".</div>
+        <div class="ax-rule"><b>Regla:</b> elige el índice según el patrón de consulta, no "por si acaso".</div>
       </div>
     </div>
   </div>
@@ -757,9 +766,9 @@
       <div class="card concl">
         <h3>Cuándo indexar</h3>
         <p>
-          <b>Mida primero</b> (Axioma 1): ejecute <code>EXPLAIN ANALYZE</code> y observe si el nodo de scan
-          es <code>Seq Scan</code> sobre una tabla grande. Indexe consultas <b>frecuentes</b> sobre
-          datos que crecen, y observe la <b>selectividad</b> del filtro: si devuelve el 10% de la tabla
+          <b>Mide primero</b> (Axioma 1): ejecuta <code>EXPLAIN ANALYZE</code> y observa si el nodo de scan
+          es <code>Seq Scan</code> sobre una tabla grande. Indexa las consultas <b>frecuentes</b> sobre
+          datos que crecen, y observa la <b>selectividad</b> del filtro: si devuelve el 10% de la tabla
           (como <code>category</code>), el índice apenas ayuda (1.3x) — la mejora real aparece cuando
           el filtro es selectivo o el índice <b>cubre</b> la consulta (4.6x).
         </p>
@@ -770,9 +779,9 @@
           <b>Simple</b> (<code>category</code>): equality y devuelve pocas filas.
           <b>Compuesto</b> (<code>category, value</code>): filtros + agregación/orden — cubre el
           <code>WHERE</code> + <code>SELECT</code> del reporte.
-          <b>Cubriente</b> (agrega <code>id</code>): responde 100% desde el índice (Index Only Scan) para
-          solo-lectura, sin volver al heap. Cada columna extra = más espacio en disco y más costo de
-          escritura.
+          <b>Cubriente</b> (agrega <code>id</code>): responde 100% desde el índice (Index Only Scan) en
+          modo solo de lectura, sin volver al heap. Cada columna extra = más espacio en disco y más
+          costo de escritura.
         </p>
       </div>
       <div class="card concl">
@@ -780,8 +789,8 @@
         <p>
           Lea <b>de adentro hacia afuera</b> (el nodo de scan primero). Compare <b>estimado vs real</b>
           (<code>cost=</code>, <code>rows=</code> vs <code>actual time</code>, <code>rows=</code>); si
-          difieren mucho, ejecute <code>ANALYZE</code>. Observe <code>Rows Removed by Filter</code>: alto =
-          se está descartando muchísimo. <b>Index Cond</b> verde = el índice resuelve el filtro.
+          difieren mucho, ejecuta <code>ANALYZE</code>. Observa <code>Rows Removed by Filter</code>: alto
+          = se está descartando muchísimas filas. <b>Index Cond</b> verde = el índice resuelve el filtro.
           <code>Execution Time</code> y <code>actual time</code> del nodo de scan = dónde se va el tiempo.
         </p>
       </div>
@@ -812,7 +821,7 @@
           </tr>
           <tr>
             <td class="k">Index Scan</td>
-            <td>Usa un <b>B-tree</b> para localizar las filas que matchean y va al <b>heap</b> a buscarlas (<b>O(log n)</b> + I/O selectivo).</td>
+            <td>Usa un <b>B-tree</b> para localizar las filas coincidentes y va al <b>heap</b> a buscarlas (<b>O(log n)</b> + I/O selectivo).</td>
             <td><code>Index Cond</code></td>
           </tr>
           <tr>
@@ -894,11 +903,12 @@
 <footer class="site-foot">
   <div class="wrap">
     <p style="margin:0 0 8px">
-      Para hacer pruebas reales con un <b>experimento ya hecho para visualizar</b>, puede <b>descargar
-      este repositorio</b> y seguir los pasos del <b>README</b> para conocer cómo manipularlo.
+      Para reproducir los experimentos con datos reales, puedes <b>descargar este repositorio</b> y
+      seguir los pasos del <b>README</b> para preparar el entorno, ejecutar las mediciones y comparar
+      los planes.
     </p>
     <p style="margin:0">
-      <a href="https://github.com/JulioN02/JDEV-TOOL" target="_blank" rel="noopener" style="color:var(--accent-2)">https://github.com/JulioN02/JDEV-TOOL</a>
+      <a href="https://github.com/JulioN02/lab-03-query-performance" target="_blank" rel="noopener" style="color:var(--accent-2)">github.com/JulioN02/lab-03-query-performance</a>
       &nbsp;·&nbsp; ruta: <code>laboratorios-ingenieria/lab-03-query-performance</code>
     </p>
   </div>
