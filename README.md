@@ -271,5 +271,5 @@ lab-03-query-performance/
 - **`node --test` sin argumentos**: pasar `tests/` como ruta falla; el script `test` ya lo invoca sin argumentos.
 - **Los experimentos son secuenciales**: comparten tablas e índices — nunca en paralelo.
 - **Crear el índice en 10M tarda ~45 s**: el índice es inversión con costo (escrituras + disco).
-- **El índice simple no es bala de plata**: con selectividad del 10 % la mejora fue 1.3x / 1.0x / 0.8x según el experimento. Si el índice "no funciona", leé el plan: el problema es la selectividad, no el índice.
+- **El índice simple no es bala de plata**: con selectividad del 10 % la mejora fue 1.3x / 1.0x / 0.8x según el experimento. Si el índice "no funciona", lee el plan: el problema es la selectividad, no el índice.
 - **`docs/output-*.txt` son gitignored**: no se versionan; se regeneran ejecutando los experimentos.
